@@ -151,6 +151,45 @@ public enum SessionSegmentRole: String, Codable, CaseIterable {
     }
 }
 
+public enum SessionIntentMode: String, Codable, CaseIterable {
+    case build
+    case review
+    case write
+    case research
+    case browse
+    case watch
+    case listen
+    case communicate
+    case admin
+    case mixed
+    case unknown
+}
+
+public struct SessionIntent: Hashable, Codable {
+    public let rawGoal: String
+    public let mode: SessionIntentMode
+    public let action: String?
+    public let targets: [String]
+    public let objects: [String]
+    public let confidence: Double
+
+    public init(
+        rawGoal: String,
+        mode: SessionIntentMode,
+        action: String? = nil,
+        targets: [String] = [],
+        objects: [String] = [],
+        confidence: Double = 0.0
+    ) {
+        self.rawGoal = rawGoal
+        self.mode = mode
+        self.action = action
+        self.targets = targets
+        self.objects = objects
+        self.confidence = confidence
+    }
+}
+
 public enum SessionGoalProgressEstimate: String, Codable, CaseIterable {
     case strong
     case partial

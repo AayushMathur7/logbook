@@ -22,6 +22,7 @@ enum LogbookSelfTest {
             ("timeline classifies Spotify as media", testTimelineClassifiesSpotifyAsMedia),
             ("observability classifies goal-aligned coding as direct work", testObservabilityClassifiesDirectWork),
             ("observability separates support and drift", testObservabilitySeparatesSupportAndDrift),
+            ("observability treats goal-matched youtube as direct", testObservabilityTreatsGoalMatchedYouTubeAsDirect),
             ("attention deriver attaches spotify as overlay", testAttentionDeriverAttachesSpotifyOverlay),
             ("timeline merges adjacent matching events", testTimelineMergesMatchingEvents),
             ("timeline infers file context from editor titles", testTimelineInfersEditorFileContext),
@@ -423,6 +424,43 @@ enum LogbookSelfTest {
         try require(summary.supportSeconds > 0, "expected support seconds to accumulate")
         try require(summary.driftSeconds > 0, "expected drift seconds to accumulate")
         try require(summary.driftInterruptions >= 1, "expected drift interruption after support work")
+    }
+
+    static func testObservabilityTreatsGoalMatchedYouTubeAsDirect() throws {
+        let now = Date()
+        let segments = [
+            TimelineSegment(
+                startAt: now,
+                endAt: now.addingTimeInterval(480),
+                appName: "Google Chrome",
+                primaryLabel: "YouTube Watch",
+                secondaryLabel: "Bill Gurley interview",
+                category: .media,
+                url: "https://www.youtube.com/watch?v=abc",
+                domain: "youtube.com",
+                confidence: 0.95,
+                eventCount: 4
+            ),
+            TimelineSegment(
+                startAt: now.addingTimeInterval(480),
+                endAt: now.addingTimeInterval(540),
+                appName: "Google Chrome",
+                primaryLabel: "X",
+                secondaryLabel: "Home feed",
+                category: .social,
+                url: "https://x.com/home",
+                domain: "x.com",
+                confidence: 0.95,
+                eventCount: 2
+            ),
+        ]
+
+        let observed = TimelineDeriver.observeSegments(segments, goal: "I wanna just watch YouTube")
+        let summary = TimelineDeriver.summarizeObservedSegments(observed)
+
+        try require(observed[0].role == .direct, "expected youtube watch page to align with explicit watch youtube goal")
+        try require(observed[1].role == .drift, "expected x detour to remain drift for watch youtube goal")
+        try require(summary.goalProgressEstimate == .strong || summary.goalProgressEstimate == .partial, "expected non-zero progress estimate for matched youtube session")
     }
 
     static func testAttentionDeriverAttachesSpotifyOverlay() throws {

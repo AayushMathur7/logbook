@@ -27,8 +27,8 @@ struct ContentView: View {
     @State private var activeSheet: ActiveSheet?
     @State private var activePane: MainPane = .session
     @State private var sessionGoalDraft = ""
-    @State private var goalFieldFocused = false
     @State private var showLiveActivity = false
+    @State private var sessionPaneStateBeforeHistory: SessionScreenState?
 
     var body: some View {
         ZStack {
@@ -82,8 +82,11 @@ struct ContentView: View {
             Button {
                 if activePane == .history {
                     activePane = .session
-                    model.restorePrimarySessionSurface()
+                    model.clearHistorySelection()
+                    model.restorePrimarySessionSurface(preferred: sessionPaneStateBeforeHistory)
+                    sessionPaneStateBeforeHistory = nil
                 } else {
+                    sessionPaneStateBeforeHistory = model.surfaceState
                     activePane = .history
                     model.ensureHistorySelection()
                 }
@@ -171,22 +174,28 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Goal")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(LogbookStyle.subtleText)
-                    ComposerTextField(
-                        text: $sessionGoalDraft,
-                        isFocused: Binding(
-                            get: { goalFieldFocused },
-                            set: { goalFieldFocused = $0 }
-                        ),
-                        placeholder: "Write homepage copy, debug auth, review the PR, ship the settings migration…"
-                    ) {
+                    Text("What are you focusing on?")
+                        .font(.system(size: 22, weight: .medium, design: .serif))
+                        .foregroundStyle(LogbookStyle.text)
+                        .padding(.bottom, 10)
+                    TextField(
+                        "Write homepage copy, debug auth, review the PR, ship the settings migration…",
+                        text: $sessionGoalDraft
+                    )
+                    .textFieldStyle(.plain)
+                    .font(LogbookStyle.uiFont(size: 13, weight: .regular))
+                    .foregroundStyle(LogbookStyle.inputText)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(LogbookStyle.inputFill)
+                    )
+                    .onSubmit {
                         if sessionGoalIsValid {
                             startSessionFromDraft()
                         }
                     }
-                    .composerInputField(isFocused: goalFieldFocused)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -204,13 +213,13 @@ struct ContentView: View {
                             get: { Double(model.sessionDurationMinutes) },
                             set: { model.setSessionDuration(Int($0.rounded())) }
                         ),
-                        in: 10...120,
+                        in: 5...120,
                         step: 5
                     )
                     .tint(LogbookStyle.accent)
 
                     HStack {
-                        Text("10m")
+                        Text("5m")
                         Spacer()
                         Text("45m")
                         Spacer()
@@ -274,15 +283,26 @@ struct ContentView: View {
     }
 
     private var generatingView: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Generating review")
-                .font(.system(size: 18, weight: .semibold))
+        VStack(alignment: .center, spacing: 14) {
+            Spacer(minLength: 0)
+
             ProgressView()
                 .controlSize(.large)
+                .scaleEffect(1.15)
+
+            Text("Generating review")
+                .font(.system(size: 24, weight: .semibold, design: .serif))
+                .multilineTextAlignment(.center)
+
             Text(model.evidenceStatusText)
                 .font(.system(size: 12))
                 .foregroundStyle(LogbookStyle.subtleText)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
+
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, minHeight: 220)
         .padding(.horizontal, 12)
     }
 
@@ -345,33 +365,45 @@ struct ContentView: View {
     }
 
     private func reviewDetail(review: SessionReview, allowRetry: Bool, allowNextSession: Bool) -> some View {
-        VStack(alignment: .leading, spacing: allowNextSession ? 14 : 18) {
+        VStack(alignment: .leading, spacing: 28) {
             HStack(alignment: .center) {
-                if allowNextSession {
-                    Text("Session review")
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(review.sessionTitle)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(LogbookStyle.subtleText)
-                } else {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(review.sessionTitle)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(LogbookStyle.subtleText)
-                            .lineLimit(1)
+                        .lineLimit(1)
 
-                        Text(historySessionStamp(startedAt: review.startedAt, endedAt: review.endedAt))
-                            .font(.system(size: 11))
-                            .foregroundStyle(LogbookStyle.subtleText.opacity(0.9))
-                    }
+                    Text(historySessionStamp(startedAt: review.startedAt, endedAt: review.endedAt))
+                        .font(.system(size: 11))
+                        .foregroundStyle(LogbookStyle.subtleText.opacity(0.9))
                 }
                 Spacer()
-                if !allowNextSession {
+
+                if allowNextSession {
                     HStack(spacing: 8) {
-                        chromeActionButton("Retry", systemImage: "arrow.clockwise") {
-                            model.reviewSelectedHistorySessionAgain()
+                        chromeActionButton("Next", systemImage: "arrow.right") {
+                            model.startNextSession()
+                        }
+
+                        if allowRetry {
+                            chromeActionButton("Retry", systemImage: "arrow.clockwise") {
+                                model.retryLastReview()
+                            }
+                        }
+                    }
+                } else {
+                    HStack(spacing: 4) {
+                        if let sessionID = model.selectedHistoryDetail?.session.id,
+                           model.reviewInFlightSessionID == sessionID {
+                            historyLoadingPill("Retrying")
+                        } else {
+                            historyIconButton("Retry", systemImage: "arrow.clockwise") {
+                                model.reviewSelectedHistorySessionAgain()
+                            }
                         }
 
                         if let sessionID = model.selectedHistoryDetail?.session.id {
-                            chromeActionButton("Delete", systemImage: "trash") {
+                            historyIconButton("Delete", systemImage: "trash") {
                                 model.deleteHistorySession(sessionID)
                             }
                         }
@@ -380,11 +412,7 @@ struct ContentView: View {
             }
 
             Text(review.headline)
-                .font(
-                    allowNextSession
-                        ? .system(size: 22, weight: .semibold)
-                        : .system(size: 24, weight: .semibold, design: .serif)
-                )
+                .font(.system(size: 24, weight: .semibold, design: .serif))
                 .fixedSize(horizontal: false, vertical: true)
 
             RichReviewText(
@@ -393,46 +421,14 @@ struct ContentView: View {
                 font: .system(size: 13),
                 color: LogbookStyle.subtleText
             )
-
-            HStack(spacing: 10) {
-                Text(review.sessionTitle)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(LogbookStyle.subtleText)
-
-                Text("•")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(LogbookStyle.subtleText.opacity(0.55))
-
-                Text(ActivityFormatting.sessionTime.string(from: review.startedAt, to: review.endedAt))
-                    .font(.system(size: 12))
-                    .foregroundStyle(LogbookStyle.subtleText)
-            }
-
-            HStack(spacing: 10) {
-                if allowNextSession {
-                    Button("Start next session") {
-                        model.startNextSession()
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-
-                if allowRetry {
-                    Button {
-                        model.retryLastReview()
-                    } label: {
-                        Label("Retry review", systemImage: "arrow.clockwise")
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
         }
         .padding(.horizontal, 12)
     }
 
     private func sessionTimelineOnly(detail: StoredSessionDetail) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 28) {
             HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(detail.session.goal)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(LogbookStyle.subtleText)
@@ -442,30 +438,60 @@ struct ContentView: View {
                         .foregroundStyle(LogbookStyle.subtleText.opacity(0.9))
                 }
                 Spacer()
-                HStack(spacing: 8) {
-                    chromeActionButton("Retry", systemImage: "arrow.clockwise") {
-                        model.reviewSelectedHistorySessionAgain()
+                HStack(spacing: 4) {
+                    if model.reviewInFlightSessionID == detail.session.id {
+                        historyLoadingPill("Retrying")
+                    } else {
+                        historyIconButton("Retry", systemImage: "arrow.clockwise") {
+                            model.reviewSelectedHistorySessionAgain()
+                        }
                     }
 
-                    chromeActionButton("Delete", systemImage: "trash") {
+                    historyIconButton("Delete", systemImage: "trash") {
                         model.deleteHistorySession(detail.session.id)
                     }
                 }
             }
-            Text(detail.session.goal)
-                .font(.system(size: 20, weight: .semibold))
             if let summary = detail.session.summary {
-                MarkdownText(summary, font: .system(size: 13), color: LogbookStyle.subtleText)
+                Text(summary)
+                    .font(.system(size: 24, weight: .semibold, design: .serif))
+                    .foregroundStyle(LogbookStyle.text)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(detail.session.goal)
+                    .font(.system(size: 24, weight: .semibold, design: .serif))
+                    .foregroundStyle(LogbookStyle.text)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.horizontal, 12)
     }
 
     private func historySessionStamp(startedAt: Date, endedAt: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return "\(formatter.string(from: startedAt)) · \(ActivityFormatting.sessionTime.string(from: startedAt, to: endedAt))"
+        let calendar = Calendar.current
+        let day = calendar.component(.day, from: startedAt)
+
+        let monthYearFormatter = DateFormatter()
+        monthYearFormatter.dateFormat = "MMMM, yyyy"
+
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "h:mm a"
+
+        return "\(day)\(ordinalSuffix(for: day)) \(monthYearFormatter.string(from: startedAt)) · \(timeFormatter.string(from: startedAt)) to \(timeFormatter.string(from: endedAt))"
+    }
+
+    private func ordinalSuffix(for day: Int) -> String {
+        let tens = day % 100
+        if tens >= 11 && tens <= 13 {
+            return "th"
+        }
+
+        switch day % 10 {
+        case 1: return "st"
+        case 2: return "nd"
+        case 3: return "rd"
+        default: return "th"
+        }
     }
 
     private func chromeActionButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
@@ -481,6 +507,28 @@ struct ContentView: View {
                 )
         }
         .buttonStyle(.plain)
+    }
+
+    private func historyIconButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        HistoryIconButton(title: title, systemImage: systemImage, action: action)
+    }
+
+    private func historyLoadingPill(_ title: String) -> some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.72)
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .foregroundStyle(LogbookStyle.subtleText)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(LogbookStyle.cardStroke, lineWidth: 1)
+        )
     }
 
     private func openAIActionButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
@@ -661,7 +709,7 @@ struct ContentView: View {
 
     private func syncSessionGoalDraftFromModel() {
         guard model.surfaceState == .setup else { return }
-        if !goalFieldFocused || sessionGoalDraft.isEmpty {
+        if sessionGoalDraft.isEmpty {
             sessionGoalDraft = model.sessionDraftTitle
         }
     }
@@ -1032,124 +1080,191 @@ struct ContentView: View {
     }
 }
 
+private struct HistoryIconButton: View {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(isHovering ? LogbookStyle.text : LogbookStyle.subtleText)
+                .frame(width: 28, height: 28)
+                .background(
+                    Capsule()
+                        .fill(isHovering ? LogbookStyle.badgeFill : Color.clear)
+                )
+                .overlay(
+                    Capsule()
+                        .stroke(isHovering ? LogbookStyle.cardStroke : Color.clear, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(title)
+        .onHover { isHovering = $0 }
+    }
+}
+
 private struct SettingsSheet: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    settingsSection("Ollama") {
-                        settingsTextField(title: "Base URL", text: $model.ollamaBaseURLInput)
-                        settingsTextField(title: "Model", text: $model.ollamaModelName)
-                        settingsTextField(title: "Timeout (seconds)", text: $model.ollamaTimeoutInput)
-                        Toggle("Store model prompt and raw response for debugging", isOn: $model.ollamaStoreDebugIO)
+        ZStack {
+            LogbookStyle.canvasBottom
+                .ignoresSafeArea()
 
-                        HStack(spacing: 10) {
-                            Button("Refresh local models") {
-                                Task { await model.refreshAvailableModels() }
-                            }
-                            .buttonStyle(.bordered)
-
-                            if !model.availableOllamaModels.isEmpty {
-                                Picker("Detected models", selection: $model.ollamaModelName) {
-                                    ForEach(model.availableOllamaModels) { model in
-                                        Text(model.name).tag(model.name)
-                                    }
-                                }
-                                .frame(maxWidth: 320)
-                            }
-                        }
-
-                        if !model.ollamaStatusMessage.isEmpty {
-                            InlineMessage(
-                                text: model.ollamaStatusMessage,
-                                tint: model.ollamaStatusIsError ? LogbookStyle.warning : LogbookStyle.success
-                            )
-                        }
-                    }
-
-                    settingsSection("Capture") {
-                        Toggle("Window titles", isOn: $model.trackAccessibilityTitles)
-                        Toggle("Browser context", isOn: $model.trackBrowserContext)
-                        Toggle("Finder context", isOn: $model.trackFinderContext)
-                        Toggle("Shell commands", isOn: $model.trackShellCommands)
-                        Toggle("File activity", isOn: $model.trackFileSystemActivity)
-                        Toggle("Clipboard", isOn: $model.trackClipboard)
-                        Toggle("Presence", isOn: $model.trackPresence)
-                        Toggle("Calendar context", isOn: $model.trackCalendarContext)
-                        settingsTextField(title: "Raw event retention (days)", text: $model.rawEventRetentionDaysInput)
-                    }
-
-                    settingsSection("Permissions") {
-                        permissionRow(title: "Accessibility", subtitle: model.accessibilityTrusted ? "Enabled" : "Not enabled") {
-                            model.requestAccessibilityAccess()
-                        }
-                        permissionRow(title: "Calendar", subtitle: model.calendarAccessDescription) {
-                            model.requestCalendarAccess()
-                        }
-                    }
-
-                    settingsSection("Privacy rules") {
-                        settingsEditor(title: "File watch roots", text: $model.fileWatchRootsInput)
-                        settingsEditor(title: "Exclude app bundle IDs", text: $model.excludedAppBundleIDsInput)
-                        settingsEditor(title: "Exclude browser domains", text: $model.excludedDomainsInput)
-                        settingsEditor(title: "Exclude path prefixes", text: $model.excludedPathPrefixesInput)
-                        settingsEditor(title: "Redact window titles for bundle IDs", text: $model.redactedTitleBundleIDsInput)
-                        settingsEditor(title: "Drop shell commands for directory prefixes", text: $model.droppedShellDirectoryPrefixesInput)
-                        settingsEditor(title: "Summary-only browser domains", text: $model.summaryOnlyDomainsInput)
-                    }
-
-                    settingsSection("Privacy statement") {
-                        Text("Log Book captures local app, title, browser, shell, file, note, clipboard-preview, and calendar context only when those sources are enabled. It never captures screenshots, OCR, audio, camera, microphone, or keystrokes. AI reviews are generated locally through Ollama on localhost only.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(LogbookStyle.subtleText)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    settingsSection("Storage") {
-                        storagePath(model.databasePath)
-                        storagePath(LogbookPaths.shellInboxURL.path)
-                    }
-
-                    HStack(spacing: 10) {
-                        Button("Save settings") {
-                            model.saveCaptureSettings()
-                            dismiss()
-                        }
-                        .buttonStyle(.borderedProminent)
-
-                        Button("Clear raw events") {
-                            model.clearAllEvents()
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("Clear model debug data") {
-                            model.clearModelDebugData()
-                        }
-                        .buttonStyle(.bordered)
-                    }
-
-                    if let errorMessage = model.errorMessage, !errorMessage.isEmpty {
-                        InlineMessage(text: errorMessage, tint: LogbookStyle.warning)
-                    }
-                }
-                .padding(18)
-                .frame(maxWidth: 540, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-            .navigationTitle("Settings")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center) {
+                    Text("Settings")
+                        .font(.system(size: 14, weight: .semibold))
+                    Spacer()
+                    settingsChromeButton("Done") {
                         model.saveCaptureSettings()
                         dismiss()
                     }
                 }
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        settingsSection("Local model") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Model")
+                                    .font(.system(size: 12, weight: .medium))
+                                if model.availableOllamaModels.isEmpty {
+                                    settingsTextField(title: "No local models detected", text: $model.ollamaModelName)
+                                } else {
+                                    Menu {
+                                        ForEach(model.availableOllamaModels) { detectedModel in
+                                            Button(detectedModel.name) {
+                                                model.ollamaModelName = detectedModel.name
+                                            }
+                                        }
+                                    } label: {
+                                        settingsMenuField(model.ollamaModelName)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            }
+
+                            HStack(spacing: 8) {
+                                settingsTextField(title: "Base URL", text: $model.ollamaBaseURLInput)
+                                settingsTextField(title: "Timeout", text: $model.ollamaTimeoutInput)
+                                    .frame(width: 92)
+                            }
+
+                            HStack(spacing: 8) {
+                                settingsChromeButton("Refresh") {
+                                    Task { await model.refreshAvailableModels() }
+                                }
+
+                                settingsInlineToggle("Debug model I/O", isOn: $model.ollamaStoreDebugIO)
+                            }
+
+                            if !model.ollamaStatusMessage.isEmpty {
+                                settingsStatusMessage(
+                                    text: model.ollamaStatusMessage,
+                                    isError: model.ollamaStatusIsError
+                                )
+                            }
+                        }
+
+                        settingsSection("Capture") {
+                            captureToggleRow(
+                                title: "Window titles",
+                                detail: "Capture editor titles, browser page titles, and active document names when macOS allows it.",
+                                isOn: $model.trackAccessibilityTitles
+                            )
+                            captureToggleRow(
+                                title: "Browser context",
+                                detail: "Capture page titles, domains, and URLs from supported browsers.",
+                                isOn: $model.trackBrowserContext
+                            )
+                            captureToggleRow(
+                                title: "Finder context",
+                                detail: "Capture the current Finder folder when Finder is frontmost.",
+                                isOn: $model.trackFinderContext
+                            )
+                            captureToggleRow(
+                                title: "Shell commands",
+                                detail: "Import terminal commands through the shell integration.",
+                                isOn: $model.trackShellCommands
+                            )
+                            captureToggleRow(
+                                title: "File activity",
+                                detail: "Capture file changes under the watched paths that Log Book observes.",
+                                isOn: $model.trackFileSystemActivity
+                            )
+                            captureToggleRow(
+                                title: "Clipboard",
+                                detail: "Capture short clipboard previews when the clipboard changes.",
+                                isOn: $model.trackClipboard
+                            )
+                            captureToggleRow(
+                                title: "Presence",
+                                detail: "Capture idle, resume, wake, and sleep signals to explain pauses in the block.",
+                                isOn: $model.trackPresence
+                            )
+                            captureToggleRow(
+                                title: "Calendar context",
+                                detail: "Capture nearby event titles so meetings can explain context switches.",
+                                isOn: $model.trackCalendarContext
+                            )
+
+                            HStack(spacing: 8) {
+                                Text("Retention")
+                                    .font(.system(size: 12, weight: .medium))
+                                Spacer()
+                                settingsTextField(title: "Days", text: $model.rawEventRetentionDaysInput)
+                                    .frame(width: 80)
+                            }
+                        }
+
+                        settingsSection("Permissions") {
+                            permissionRow(title: "Accessibility", subtitle: model.accessibilityTrusted ? "Enabled" : "Needed for window titles and richer context") {
+                                model.requestAccessibilityAccess()
+                            }
+                            permissionRow(title: "Calendar", subtitle: model.calendarAccessDescription) {
+                                model.requestCalendarAccess()
+                            }
+                        }
+
+                        settingsSection("Privacy") {
+                            Text("Log Book stays local. It captures app, title, browser, shell, file, clipboard preview, presence, and calendar context only when those sources are enabled. It does not capture screenshots, OCR, audio, camera, microphone, or keystrokes.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(LogbookStyle.subtleText)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        HStack(spacing: 8) {
+                            settingsChromeButton("Save") {
+                                model.saveCaptureSettings()
+                                dismiss()
+                            }
+
+                            settingsChromeButton("Clear events") {
+                                model.clearAllEvents()
+                            }
+
+                            settingsChromeButton("Clear debug") {
+                                model.clearModelDebugData()
+                            }
+                        }
+
+                        if let errorMessage = model.errorMessage, !errorMessage.isEmpty {
+                            InlineMessage(text: errorMessage, tint: LogbookStyle.warning)
+                        }
+                    }
+                    .padding(.bottom, 6)
+                }
             }
+            .padding(12)
         }
-        .frame(width: 560, height: 500)
+        .frame(width: 480, height: 420)
+        .background(LogbookStyle.canvasBottom)
         .preferredColorScheme(.dark)
         .task {
             await model.refreshAvailableModels()
@@ -1158,14 +1273,15 @@ private struct SettingsSheet: View {
 
     @ViewBuilder
     private func settingsSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.system(size: 14, weight: .semibold))
-            Card(secondary: true) {
-                VStack(alignment: .leading, spacing: 12) {
-                    content()
-                }
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(LogbookStyle.subtleText)
+            VStack(alignment: .leading, spacing: 10) {
+                content()
             }
+            Divider()
+                .overlay(LogbookStyle.cardStroke.opacity(0.75))
         }
     }
 
@@ -1173,27 +1289,26 @@ private struct SettingsSheet: View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                 Text(subtitle)
-                    .font(.system(size: 12))
+                    .font(.system(size: 11))
                     .foregroundStyle(LogbookStyle.subtleText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Button("Request", action: action)
-                .buttonStyle(.bordered)
+            settingsChromeButton("Request", action: action)
         }
     }
 
     private func settingsTextField(title: String, text: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
             TextField(title, text: text)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
+                .font(.system(size: 12))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(LogbookStyle.inputFill)
@@ -1205,30 +1320,99 @@ private struct SettingsSheet: View {
         }
     }
 
-    private func settingsEditor(title: String, text: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 13, weight: .medium))
-            TextEditor(text: text)
-                .font(.system(size: 11, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .padding(10)
-                .frame(minHeight: 72)
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(LogbookStyle.inputFill)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(LogbookStyle.cardStroke, lineWidth: 1)
-                        )
-                )
+    private func captureToggleRow(title: String, detail: String, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(LogbookStyle.subtleText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            settingsSwitch(isOn: isOn)
         }
     }
 
-    private func storagePath(_ value: String) -> some View {
-        Text(value)
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(LogbookStyle.subtleText)
-            .textSelection(.enabled)
+    private func settingsStatusMessage(text: String, isError: Bool) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(isError ? LogbookStyle.warning : LogbookStyle.subtleText)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func settingsMenuField(_ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(value)
+                .font(.system(size: 12))
+                .foregroundStyle(LogbookStyle.text)
+                .lineLimit(1)
+            Spacer()
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(LogbookStyle.subtleText)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(LogbookStyle.inputFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(LogbookStyle.cardStroke, lineWidth: 1)
+        )
+    }
+
+    private func settingsChromeButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .font(.system(size: 11, weight: .semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                Capsule()
+                    .fill(LogbookStyle.badgeFill)
+            )
+            .overlay(
+                Capsule()
+                    .stroke(LogbookStyle.cardStroke, lineWidth: 1)
+            )
+            .buttonStyle(.plain)
+    }
+
+    private func settingsInlineToggle(_ title: String, isOn: Binding<Bool>) -> some View {
+        Button {
+            isOn.wrappedValue.toggle()
+        } label: {
+            HStack(spacing: 8) {
+                settingsSwitch(isOn: isOn)
+                Text(title)
+                    .font(.system(size: 11))
+                    .foregroundStyle(LogbookStyle.subtleText)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func settingsSwitch(isOn: Binding<Bool>) -> some View {
+        Button {
+            isOn.wrappedValue.toggle()
+        } label: {
+            ZStack(alignment: isOn.wrappedValue ? .trailing : .leading) {
+                Capsule()
+                    .fill(isOn.wrappedValue ? LogbookStyle.badgeFill : LogbookStyle.inputFill)
+                    .frame(width: 34, height: 20)
+                    .overlay(
+                        Capsule()
+                            .stroke(isOn.wrappedValue ? LogbookStyle.badgeStroke : LogbookStyle.cardStroke, lineWidth: 1)
+                    )
+                Circle()
+                    .fill(LogbookStyle.text)
+                    .frame(width: 14, height: 14)
+                    .padding(3)
+            }
+        }
+        .buttonStyle(.plain)
     }
 }

@@ -74,6 +74,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var activeSessionEventCount = 0
     @Published private(set) var historySessions: [StoredSession] = []
     @Published private(set) var selectedHistoryDetail: StoredSessionDetail?
+    @Published private(set) var reviewInFlightSessionID: String?
     @Published var showPermissionOnboarding = true
 
     private let monitor = ActivityMonitor()
@@ -304,6 +305,10 @@ final class AppModel: ObservableObject {
     }
 
     var evidenceStatusText: String {
+        if surfaceState == .generatingReview {
+            return "Building the timeline and generating your session review."
+        }
+
         if let activeSession {
             return "\(activeSessionEventCount) events captured for \(activeSession.title)."
         }
@@ -455,6 +460,7 @@ final class AppModel: ObservableObject {
 
     func retryLastReview() {
         guard let context = completedSessionContext else { return }
+        reviewInFlightSessionID = context.sessionID
         surfaceState = .generatingReview
         lastReviewErrorMessage = nil
         performReview(for: context)
@@ -462,6 +468,7 @@ final class AppModel: ObservableObject {
 
     func reviewSelectedHistorySessionAgain() {
         guard let detail = selectedHistoryDetail else { return }
+        reviewInFlightSessionID = detail.session.id
         let events = store.events(between: detail.session.startedAt, and: detail.session.endedAt)
         let calendarTitles = nearbyCalendarTitles(startedAt: detail.session.startedAt, endedAt: detail.session.endedAt)
         let context = CompletedSessionContext(
@@ -519,6 +526,9 @@ final class AppModel: ObservableObject {
     func deleteHistorySession(_ id: String) {
         do {
             try store.deleteSession(id: id)
+            if reviewInFlightSessionID == id {
+                reviewInFlightSessionID = nil
+            }
             refreshHistory()
             hydrateLatestSession()
             errorMessage = nil
@@ -582,7 +592,8 @@ final class AppModel: ObservableObject {
     }
 
     func setSessionDuration(_ minutes: Int) {
-        let clamped = max(1, minutes)
+        let rounded = Int((Double(minutes) / 5.0).rounded()) * 5
+        let clamped = min(max(5, rounded), 120)
         sessionDurationMinutes = clamped
         sessionDurationInput = String(clamped)
     }
@@ -593,16 +604,11 @@ final class AppModel: ObservableObject {
             sessionDurationInput = String(sessionDurationMinutes)
             return
         }
-        sessionDurationMinutes = parsed
-        sessionDurationInput = String(parsed)
+        setSessionDuration(parsed)
     }
 
     func selectHistorySession(_ id: String) {
-        if selectedHistoryDetail?.session.id == id {
-            selectedHistoryDetail = nil
-        } else {
-            selectedHistoryDetail = store.sessionDetail(id: id)
-        }
+        selectedHistoryDetail = store.sessionDetail(id: id)
     }
 
     func ensureHistorySelection() {
@@ -619,7 +625,11 @@ final class AppModel: ObservableObject {
         selectedHistoryDetail = store.sessionDetail(id: latest.id)
     }
 
-    func restorePrimarySessionSurface() {
+    func clearHistorySelection() {
+        selectedHistoryDetail = nil
+    }
+
+    func restorePrimarySessionSurface(preferred state: SessionScreenState? = nil) {
         if activeSession != nil {
             surfaceState = .running
             return
@@ -627,6 +637,25 @@ final class AppModel: ObservableObject {
 
         if surfaceState == .generatingReview {
             return
+        }
+
+        if let state {
+            switch state {
+            case .setup:
+                surfaceState = .setup
+                return
+            case .reviewReady:
+                hydrateLatestSession()
+                surfaceState = lastSessionReview == nil ? .setup : .reviewReady
+                return
+            case .running:
+                surfaceState = .setup
+                return
+            case .generatingReview:
+                hydrateLatestSession()
+                surfaceState = lastSessionReview == nil ? .setup : .reviewReady
+                return
+            }
         }
 
         hydrateLatestSession()
@@ -807,6 +836,7 @@ final class AppModel: ObservableObject {
     }
 
     private func performReview(for context: CompletedSessionContext) {
+        reviewInFlightSessionID = context.sessionID
         guard !context.events.isEmpty else {
             lastReviewErrorMessage = "Not enough captured evidence to ask Ollama for a review."
             let fallback = fallbackReview(
@@ -911,6 +941,7 @@ final class AppModel: ObservableObject {
         reviewStatus: ReviewStatus,
         rawEventCount: Int
     ) {
+        reviewInFlightSessionID = nil
         lastSessionReview = review
         lastSessionReviewProvider = providerTitle
         lastSessionReviewPrompt = prompt
@@ -1166,6 +1197,7 @@ private extension AppModel {
         let attentionSegments = AttentionDeriver.derive(from: segments)
         let narrativeSegments = attentionSegments.map(\.foreground)
         let overlays = attentionSegments.flatMap(\.overlays)
+        let intent = TimelineDeriver.deriveIntent(from: title)
 
         guard !narrativeSegments.isEmpty else {
             let summary = "There wasn’t enough captured activity in this session window to say what you were doing."
@@ -1183,28 +1215,42 @@ private extension AppModel {
         }
 
         let totalDuration = max(narrativeSegments.reduce(0) { $0 + segmentDuration($1) }, 1)
-        let workSegments = narrativeSegments.filter { localRole(for: $0) == .work }
-        let driftSegments = narrativeSegments.filter { localRole(for: $0) == .drift }
-        let workDuration = workSegments.reduce(0) { $0 + segmentDuration($1) }
-        let driftDuration = driftSegments.reduce(0) { $0 + segmentDuration($1) }
+        let observedSegments = TimelineDeriver.observeSegments(narrativeSegments, goal: title)
+        let observedRoles = Dictionary(uniqueKeysWithValues: observedSegments.map { ($0.segment.id, $0.role) })
+        let observability = TimelineDeriver.summarizeObservedSegments(observedSegments)
+        let alignedSegments = narrativeSegments.filter {
+            switch observedRoles[$0.id] {
+            case .direct?, .support?:
+                return true
+            default:
+                return false
+            }
+        }
+        let driftSegments = narrativeSegments.filter { observedRoles[$0.id] == .drift }
+        let alignedDuration = TimeInterval(observability.directSeconds + observability.supportSeconds)
+        let driftDuration = TimeInterval(observability.driftSeconds)
         let switchCount = max(narrativeSegments.count - 1, 0)
 
         let goalMatch: SessionGoalMatch
         let quality: SessionQuality
-        if workDuration >= totalDuration * 0.65 && driftDuration <= totalDuration * 0.18 && switchCount <= 6 {
+        switch observability.goalProgressEstimate {
+        case .strong:
             goalMatch = .strong
             quality = .coherent
-        } else if workDuration >= totalDuration * 0.35 {
+        case .partial:
             goalMatch = .partial
             quality = driftDuration >= totalDuration * 0.35 || switchCount >= 8 ? .mixed : .coherent
-        } else {
+        case .weak:
+            goalMatch = alignedDuration >= totalDuration * 0.25 ? .partial : .weak
+            quality = .mixed
+        case .none:
             goalMatch = .weak
             quality = .drifted
         }
 
         let verdict = SessionVerdict(goalMatch: goalMatch)
         let dominantContext = dominantWorkContext(in: narrativeSegments)
-        let workPhrases = selectedPhrases(from: workSegments, role: .work, dominantContext: dominantContext, limit: 3)
+        let workPhrases = selectedPhrases(from: alignedSegments, role: .work, dominantContext: dominantContext, limit: 3)
         let driftPhrases = selectedPhrases(from: driftSegments, role: .drift, dominantContext: dominantContext, limit: 3)
         let breakCount = narrativeSegments.filter(isBreakSegment(_:)).count
 
@@ -1213,7 +1259,7 @@ private extension AppModel {
         case .matched:
             headline = "You mostly stayed with the work in this block."
         case .partiallyMatched:
-            headline = driftDuration > workDuration
+            headline = driftDuration > alignedDuration
                 ? "You stayed near the work, but the block kept drifting."
                 : "You made progress, but the block stayed fragmented."
         case .missed:
@@ -1222,6 +1268,7 @@ private extension AppModel {
 
         let summary = conciseNarrativeSummary(
             title: title,
+            intent: intent,
             verdict: verdict,
             workPhrases: workPhrases,
             driftPhrases: driftPhrases,
@@ -1242,7 +1289,11 @@ private extension AppModel {
             }
         case .missed:
             if !driftPhrases.isEmpty {
-                focusAssessment = "Most of the session was absorbed by \(joinClauses(Array(driftPhrases.prefix(2)))) rather than direct progress on \(inlineEmphasis(title))."
+                if isIntentProgressSession(intent) {
+                    focusAssessment = "Most of the session was absorbed by \(joinClauses(Array(driftPhrases.prefix(2)))) rather than direct progress on \(inlineEmphasis(title))."
+                } else {
+                    focusAssessment = "Most of the session moved through \(joinClauses(Array(driftPhrases.prefix(2)))) instead of staying with the session intent."
+                }
             } else {
                 focusAssessment = "This session did not leave a strong enough work thread to call it focused."
             }
@@ -1393,34 +1444,15 @@ private extension AppModel {
         return "\(trimmed[..<index])..."
     }
 
-    func localRole(for segment: TimelineSegment) -> LocalSegmentRole {
-        let lowerPrimary = segment.primaryLabel.lowercased()
-        let lowerSecondary = segment.secondaryLabel?.lowercased() ?? ""
-        let lowerApp = segment.appName.lowercased()
-        let domain = (segment.domain ?? "").lowercased()
-
-        if isBreakSegment(segment) {
-            return .drift
-        }
-        if lowerPrimary.contains("new tab") || lowerSecondary.contains("new tab") {
-            return .drift
-        }
-        if domain == "youtube.com" || domain == "youtu.be" || domain == "x.com" || domain == "twitter.com" {
-            return .drift
-        }
-        if domain.contains("calendar.notion.so") || lowerPrimary.contains("calendar") || lowerSecondary.contains("calendar") {
-            return .drift
-        }
-        if lowerApp.contains("spotify") || lowerApp.contains("music") {
-            return .drift
-        }
-        if segment.category == .social || segment.category == .media {
-            return .drift
-        }
-        if segment.category == .coding || segment.category == .docs || domain == "github.com" || segment.filePath != nil || segment.repoName != nil {
+    func localRole(for observedRole: SessionSegmentRole) -> LocalSegmentRole {
+        switch observedRole {
+        case .direct, .support:
             return .work
+        case .drift, .breakTime:
+            return .drift
+        case .neutral:
+            return .neutral
         }
-        return .neutral
     }
 
     func isBreakSegment(_ segment: TimelineSegment) -> Bool {
@@ -1666,6 +1698,7 @@ private extension AppModel {
 
     func conciseNarrativeSummary(
         title: String,
+        intent: SessionIntent,
         verdict: SessionVerdict,
         workPhrases: [String],
         driftPhrases: [String],
@@ -1680,11 +1713,29 @@ private extension AppModel {
 
         switch verdict {
         case .matched:
+            if !isIntentProgressSession(intent) {
+                if let workClause {
+                    return "You mostly did what you set out to do: \(workClause)."
+                }
+                return "You mostly stayed with the session you meant to have."
+            }
             if let workClause {
                 return "You mostly stayed with \(workClause), and the block moved \(inlineEmphasis(title)) forward."
             }
             return "You stayed with \(inlineEmphasis(title)) closely enough for the block to move forward."
         case .partiallyMatched:
+            if !isIntentProgressSession(intent) {
+                if let workClause, let driftClause {
+                    return "You mostly stayed with \(workClause), but \(driftClause) pulled part of the block elsewhere."
+                }
+                if let workClause {
+                    return "You spent most of the block \(workClause), but the session still wandered."
+                }
+                if let driftClause {
+                    return "You spent much of the block \(driftClause), so the session only partly matched what you meant to do."
+                }
+                return "The session stayed near what you meant to do, but drift took over too often."
+            }
             if let workClause, let driftClause {
                 return "You stayed near \(workClause), but \(driftClause) kept \(inlineEmphasis(title)) from moving much."
             }
@@ -1696,6 +1747,15 @@ private extension AppModel {
             }
             return "You stayed near \(inlineEmphasis(title)), but the block did not turn into steady progress."
         case .missed:
+            if !isIntentProgressSession(intent) {
+                if let driftClause {
+                    return "You mostly spent the block \(driftClause) instead of staying with what you set out to do."
+                }
+                if let neutralClause {
+                    return "You mostly spent the block \(neutralClause) instead of staying with what you set out to do."
+                }
+                return "This session turned into something other than what you set out to do."
+            }
             if let driftClause {
                 var sentence = "You mostly spent the block \(driftClause) instead of moving \(inlineEmphasis(title)) forward."
                 if let audioClause {
@@ -1716,6 +1776,15 @@ private extension AppModel {
 
     func inlineEmphasis(_ value: String) -> String {
         "**\(value.replacingOccurrences(of: "*", with: ""))**"
+    }
+
+    func isIntentProgressSession(_ intent: SessionIntent) -> Bool {
+        switch intent.mode {
+        case .watch, .listen, .browse:
+            return false
+        case .build, .review, .write, .research, .communicate, .admin, .mixed, .unknown:
+            return true
+        }
     }
 }
 

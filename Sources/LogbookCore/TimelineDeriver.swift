@@ -65,13 +65,84 @@ public enum TimelineDeriver {
         return nil
     }
 
+    public static func deriveIntent(from goal: String) -> SessionIntent {
+        let normalized = goal.lowercased()
+        let goalTerms = goalKeywords(from: goal)
+        let matchedTargets = knownIntentTargets.compactMap { canonical, aliases -> String? in
+            aliases.contains(where: { normalized.contains($0) }) ? canonical : nil
+        }
+
+        let modeCandidates: [(SessionIntentMode, [String])] = [
+            (.watch, ["watch", "youtube", "video", "videos", "shorts", "movie", "stream"]),
+            (.listen, ["listen", "spotify", "song", "songs", "music", "album", "playlist", "podcast"]),
+            (.browse, ["browse", "scroll", "surf", "explore", "check x", "check twitter", "check linkedin"]),
+            (.review, ["review", "pr", "pull request", "issue", "compare", "diff", "feedback"]),
+            (.write, ["write", "draft", "copy", "blog", "doc", "docs", "memo", "spec", "proposal"]),
+            (.research, ["research", "learn", "read", "study", "investigate", "look into"]),
+            (.communicate, ["message", "messages", "reply", "email", "mail", "slack", "dm"]),
+            (.admin, ["calendar", "schedule", "plan", "planning", "organize", "admin"]),
+            (.build, ["build", "ship", "deploy", "debug", "fix", "implement", "code", "repo", "github", "cursor", "codex", "xcode"]),
+        ]
+
+        let scoredModes = modeCandidates
+            .map { mode, hints in
+                let score = hints.reduce(0) { partial, hint in
+                    partial + (normalized.contains(hint) ? 1 : 0)
+                }
+                return (mode: mode, score: score)
+            }
+            .filter { $0.score > 0 }
+            .sorted {
+                if $0.score == $1.score {
+                    return $0.mode.rawValue < $1.mode.rawValue
+                }
+                return $0.score > $1.score
+            }
+
+        let mode: SessionIntentMode
+        if scoredModes.count >= 2, scoredModes[0].score == scoredModes[1].score {
+            mode = .mixed
+        } else {
+            mode = scoredModes.first?.mode ?? .unknown
+        }
+
+        let action = primaryIntentAction(in: normalized, mode: mode)
+        let objectTerms = Array(
+            goalTerms
+                .filter { term in
+                    !matchedTargets.contains(where: { $0.replacingOccurrences(of: " ", with: "") == term })
+                }
+                .sorted()
+                .prefix(5)
+        )
+
+        let confidence = min(
+            0.98,
+            0.25
+                + (matchedTargets.isEmpty ? 0 : 0.25)
+                + (mode == .unknown ? 0 : 0.2)
+                + (objectTerms.isEmpty ? 0 : 0.12)
+                + (action == nil ? 0 : 0.08)
+        )
+
+        return SessionIntent(
+            rawGoal: goal,
+            mode: mode,
+            action: action,
+            targets: matchedTargets,
+            objects: objectTerms,
+            confidence: confidence
+        )
+    }
+
     public static func observeSegments(_ segments: [TimelineSegment], goal: String) -> [ObservedTimelineSegment] {
+        let intent = deriveIntent(from: goal)
         let goalTerms = goalKeywords(from: goal)
 
         return segments.map { segment in
             let relevance = goalRelevance(for: segment, goal: goal, goalTerms: goalTerms)
-            let role = segmentRole(for: segment, relevance: relevance)
-            let rationale = segmentRationale(for: segment, role: role, relevance: relevance)
+            let role = segmentRole(for: segment, relevance: relevance, intent: intent)
+            let rationale = segmentRationale(for: segment, role: role, relevance: relevance, intent: intent)
             return ObservedTimelineSegment(
                 segment: segment,
                 role: role,
@@ -540,53 +611,174 @@ public enum TimelineDeriver {
         return .unknown
     }
 
-    private static func segmentRole(for segment: TimelineSegment, relevance: Double) -> SessionSegmentRole {
-        let lowerPrimary = segment.primaryLabel.lowercased()
-        let lowerSecondary = segment.secondaryLabel?.lowercased() ?? ""
-        let lowerApp = segment.appName.lowercased()
-        let domain = (segment.domain ?? "").lowercased()
+    private static func segmentRole(for segment: TimelineSegment, relevance: Double, intent: SessionIntent) -> SessionSegmentRole {
+        let alignment = alignmentScore(for: segment, relevance: relevance, intent: intent)
 
         if isBreakSegment(segment) {
             return .breakTime
         }
 
+        if alignment >= 0.65 {
+            return .direct
+        }
+        if alignment >= 0.2 {
+            return .support
+        }
+        if alignment <= -0.15 {
+            return .drift
+        }
+        return .neutral
+    }
+
+    private static func alignmentScore(for segment: TimelineSegment, relevance: Double, intent: SessionIntent) -> Double {
+        let lowerPrimary = segment.primaryLabel.lowercased()
+        let lowerSecondary = segment.secondaryLabel?.lowercased() ?? ""
+        let lowerApp = segment.appName.lowercased()
+        let domain = (segment.domain ?? "").lowercased()
+        let surfaceTokens = segmentIntentTokens(for: segment)
+        let targetMatchCount = intent.targets.filter { surfaceTokens.contains($0) }.count
+        let hasExplicitSurfaceTargets = !intent.targets.isEmpty
+        let surfaceMismatch = hasExplicitSurfaceTargets && targetMatchCount == 0 && surfaceTokens.contains(where: knownIntentTargets.keys.contains)
+
+        var score = (relevance * 0.8) - 0.1
+
+        if targetMatchCount > 0 {
+            score += 0.55 + min(Double(targetMatchCount - 1) * 0.08, 0.16)
+        } else if surfaceMismatch {
+            score -= 0.24
+        }
+
         if lowerPrimary.contains("new tab") || lowerSecondary.contains("new tab") {
-            return .drift
+            score -= 0.3
         }
 
-        if domain == "youtube.com" || domain == "youtu.be" || domain == "x.com" || domain == "twitter.com" {
-            return .drift
+        if objectBlob(for: segment).contains(where: { object in
+            intent.objects.contains(where: { object.contains($0) || $0.contains(object) })
+        }) {
+            score += 0.08
         }
 
-        if lowerApp.contains("spotify") || lowerApp.contains("music") || segment.category == .media || segment.category == .social {
-            return .drift
+        score += modeAffinity(for: segment, intent: intent)
+
+        if segment.category == .media || segment.category == .social {
+            switch intent.mode {
+            case .watch, .listen, .browse, .research:
+                break
+            default:
+                score -= targetMatchCount > 0 ? 0 : 0.14
+            }
         }
 
         if domain.contains("calendar.notion.so") || lowerPrimary.contains("calendar") || lowerSecondary.contains("calendar") {
-            return relevance >= 0.35 ? .support : .drift
+            score += intent.mode == .admin || intent.mode == .research ? 0.16 : -0.08
         }
 
         if segment.filePath != nil {
-            return relevance >= 0.45 ? .direct : .support
+            score += intent.mode == .build || intent.mode == .write || intent.mode == .review ? 0.16 : 0.05
         }
 
         if lowerApp.contains("cursor") || lowerApp.contains("codex") || lowerApp.contains("xcode") || lowerApp.contains("code") {
-            return relevance >= 0.35 ? .direct : .support
+            score += intent.mode == .build || intent.mode == .review ? 0.18 : 0.04
         }
 
         if domain == "github.com" {
-            return relevance >= 0.2 ? .support : .neutral
+            score += intent.mode == .build || intent.mode == .review || intent.mode == .research ? 0.16 : 0.02
         }
 
-        if segment.category == .coding || segment.category == .docs {
-            return relevance >= 0.35 ? .direct : .support
+        return min(max(score, -1), 1)
+    }
+
+    private static func modeAffinity(for segment: TimelineSegment, intent: SessionIntent) -> Double {
+        let lowerPrimary = segment.primaryLabel.lowercased()
+        let lowerSecondary = segment.secondaryLabel?.lowercased() ?? ""
+        let lowerApp = segment.appName.lowercased()
+        let domain = (segment.domain ?? "").lowercased()
+
+        switch intent.mode {
+        case .watch:
+            if domain == "youtube.com" || domain == "youtu.be" || lowerPrimary.contains("watch") || lowerPrimary.contains("shorts") {
+                return 0.34
+            }
+            if segment.category == .media {
+                return 0.12
+            }
+            if domain == "x.com" || domain == "twitter.com" || segment.category == .social {
+                return -0.18
+            }
+        case .listen:
+            if lowerApp.contains("spotify") || lowerApp.contains("music") || lowerPrimary.contains("spotify") || lowerSecondary.contains("spotify") {
+                return 0.34
+            }
+            if domain == "youtube.com" || domain == "youtu.be" {
+                return -0.08
+            }
+        case .browse:
+            if domain == "x.com" || domain == "twitter.com" || segment.category == .social {
+                return 0.24
+            }
+            if segment.url != nil || domain == "youtube.com" || domain == "youtu.be" {
+                return 0.08
+            }
+        case .review:
+            if domain == "github.com" || segment.category == .docs || segment.category == .research {
+                return 0.22
+            }
+            if segment.filePath != nil {
+                return 0.1
+            }
+        case .write:
+            if segment.category == .docs || segment.filePath != nil {
+                return 0.22
+            }
+            if domain == "docs.google.com" {
+                return 0.28
+            }
+        case .research:
+            if segment.category == .research || segment.category == .docs {
+                return 0.18
+            }
+            if domain == "youtube.com" || domain == "youtu.be" || domain == "github.com" {
+                return 0.12
+            }
+            if domain == "x.com" || domain == "twitter.com", lowerSecondary == "home feed" {
+                return -0.12
+            }
+        case .communicate:
+            if lowerApp.contains("mail") || lowerApp.contains("messages") || lowerApp.contains("slack") || domain.contains("gmail.com") {
+                return 0.28
+            }
+        case .admin:
+            if domain.contains("calendar") || lowerPrimary.contains("calendar") || lowerSecondary.contains("calendar") {
+                return 0.28
+            }
+            if lowerPrimary.contains("settings") || lowerApp.contains("settings") {
+                return 0.14
+            }
+        case .build:
+            if domain == "github.com" {
+                return 0.1
+            }
+            if segment.filePath != nil {
+                return 0.24
+            }
+            if segment.repoName != nil {
+                return 0.18
+            }
+            if segment.category == .coding {
+                return 0.16
+            }
+            if segment.category == .media || segment.category == .social {
+                return -0.22
+            }
+        case .mixed:
+            if segment.category == .coding || segment.category == .docs || segment.category == .research {
+                return 0.08
+            }
+        case .unknown:
+            break
         }
 
-        if segment.category == .research || segment.category == .communication || segment.category == .admin {
-            return relevance >= 0.25 ? .support : .neutral
-        }
-
-        return relevance >= 0.4 ? .support : .neutral
+        return 0
     }
 
     private static func goalRelevance(for segment: TimelineSegment, goal: String, goalTerms: Set<String>) -> Double {
@@ -634,19 +826,22 @@ public enum TimelineDeriver {
         return min(max(score, 0), 1)
     }
 
-    private static func segmentRationale(for segment: TimelineSegment, role: SessionSegmentRole, relevance: Double) -> String {
+    private static func segmentRationale(for segment: TimelineSegment, role: SessionSegmentRole, relevance: Double, intent: SessionIntent) -> String {
         let domain = (segment.domain ?? "").lowercased()
         if role == .drift {
-            if domain == "youtube.com" || domain == "youtu.be" || domain == "x.com" || domain == "twitter.com" {
-                return "Foreground browsing drifted away from the stated goal."
+            if !intent.targets.isEmpty {
+                return "This pulled the session away from the stated intent rather than supporting it."
             }
             if isBreakSegment(segment) {
                 return "Manual note marked a break inside the session."
             }
-            return "Observed activity did not look goal-relevant."
+            return "Observed activity did not look aligned with the stated intent."
         }
 
         if role == .direct {
+            if !intent.targets.isEmpty {
+                return "This matched the stated intent closely enough to count as the main thread of the session."
+            }
             if let filePath = segment.filePath {
                 return "Active file context matched the likely work object: \(URL(fileURLWithPath: filePath).lastPathComponent)."
             }
@@ -657,6 +852,11 @@ public enum TimelineDeriver {
         }
 
         if role == .support {
+            if !intent.targets.isEmpty {
+                return relevance >= 0.35
+                    ? "This stayed near the stated intent, but was less central than the main thread."
+                    : "This looked adjacent to the stated intent without being the core activity."
+            }
             if domain == "github.com" {
                 return "GitHub context looked relevant, but browser review is treated as support work."
             }
@@ -754,11 +954,48 @@ private func cleanedTitle(_ value: String?) -> String? {
     return final.isEmpty ? nil : final
 }
 
+private let knownIntentTargets: [String: [String]] = [
+    "youtube": ["youtube", "youtu.be", "video", "videos", "shorts"],
+    "x": ["x", "x.com", "twitter", "twitter.com"],
+    "spotify": ["spotify", "music", "song", "songs", "playlist", "album"],
+    "github": ["github", "repo", "repository", "pull request", "pr", "issue"],
+    "notion-calendar": ["notion calendar", "calendar.notion.so", "calendar"],
+    "notion": ["notion"],
+    "cursor": ["cursor"],
+    "codex": ["codex"],
+    "chrome": ["chrome", "google chrome"],
+    "safari": ["safari"],
+    "terminal": ["terminal", "shell", "command line"],
+    "google-docs": ["google docs", "docs.google.com"],
+    "google-drive": ["google drive", "drive.google.com"],
+]
+
+private func primaryIntentAction(in normalizedGoal: String, mode: SessionIntentMode) -> String? {
+    let actionsByMode: [SessionIntentMode: [String]] = [
+        .watch: ["watch"],
+        .listen: ["listen"],
+        .browse: ["browse", "scroll", "explore"],
+        .review: ["review"],
+        .write: ["write", "draft"],
+        .research: ["research", "read", "learn"],
+        .communicate: ["message", "reply", "email"],
+        .admin: ["plan", "schedule", "organize"],
+        .build: ["build", "ship", "deploy", "debug", "fix", "implement", "code"],
+    ]
+
+    for action in actionsByMode[mode] ?? [] where normalizedGoal.contains(action) {
+        return action
+    }
+
+    return nil
+}
+
 private func goalKeywords(from goal: String) -> Set<String> {
     let stopWords: Set<String> = [
         "a", "an", "and", "for", "from", "into", "my", "of", "on", "or",
         "the", "to", "with", "work", "working", "focus", "focused", "session",
-        "block", "ship", "make", "build", "fix", "review"
+        "block", "ship", "make", "build", "fix", "review", "wanna", "want",
+        "just", "please", "need", "i", "me"
     ]
 
     let normalized = goal
@@ -771,6 +1008,72 @@ private func goalKeywords(from goal: String) -> Set<String> {
             .map(String.init)
             .filter { $0.count >= 2 && !stopWords.contains($0) }
     )
+}
+
+private func segmentIntentTokens(for segment: TimelineSegment) -> Set<String> {
+    var tokens: Set<String> = []
+    let lowerPrimary = segment.primaryLabel.lowercased()
+    let lowerSecondary = segment.secondaryLabel?.lowercased() ?? ""
+    let lowerApp = segment.appName.lowercased()
+    let domain = (segment.domain ?? "").lowercased()
+
+    if domain == "youtube.com" || domain == "youtu.be" || lowerPrimary.contains("youtube") {
+        tokens.insert("youtube")
+    }
+    if domain == "x.com" || domain == "twitter.com" || lowerPrimary == "x" || lowerSecondary.contains("@") {
+        tokens.insert("x")
+    }
+    if lowerApp.contains("spotify") || lowerPrimary.contains("spotify") || lowerSecondary.contains("spotify") {
+        tokens.insert("spotify")
+    }
+    if domain == "github.com" || lowerPrimary.contains("github") || lowerSecondary.contains("/") {
+        tokens.insert("github")
+    }
+    if domain.contains("calendar.notion.so") || lowerPrimary.contains("calendar") || lowerSecondary.contains("calendar") {
+        tokens.insert("notion-calendar")
+        tokens.insert("notion")
+    } else if lowerPrimary.contains("notion") || lowerSecondary.contains("notion") {
+        tokens.insert("notion")
+    }
+    if lowerApp.contains("cursor") || lowerPrimary.contains("cursor") {
+        tokens.insert("cursor")
+    }
+    if lowerApp.contains("codex") || lowerPrimary.contains("codex") {
+        tokens.insert("codex")
+    }
+    if lowerApp.contains("chrome") {
+        tokens.insert("chrome")
+    }
+    if lowerApp.contains("safari") {
+        tokens.insert("safari")
+    }
+    if lowerApp.contains("terminal") || lowerApp.contains("ghostty") || lowerApp.contains("iterm") {
+        tokens.insert("terminal")
+    }
+    if domain == "docs.google.com" {
+        tokens.insert("google-docs")
+    }
+    if domain == "drive.google.com" {
+        tokens.insert("google-drive")
+    }
+
+    return tokens
+}
+
+private func objectBlob(for segment: TimelineSegment) -> [String] {
+    [
+        segment.primaryLabel,
+        segment.secondaryLabel ?? "",
+        segment.repoName ?? "",
+        segment.filePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "",
+    ]
+        .map {
+            $0
+                .lowercased()
+                .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        .filter { !$0.isEmpty }
 }
 
 private func isBreakSegment(_ segment: TimelineSegment) -> Bool {

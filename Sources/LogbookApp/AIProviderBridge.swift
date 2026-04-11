@@ -82,7 +82,14 @@ enum AIProviderBridge: LocalReviewProvider {
         let (data, _) = try await URLSession.shared.data(for: request)
         let response = try JSONDecoder().decode(OllamaGenerateResponse.self, from: data)
         let raw = response.response.trimmingCharacters(in: .whitespacesAndNewlines)
-        let review = try parseSessionReview(from: raw, title: title, startedAt: startedAt, endedAt: endedAt, segments: segments)
+        let review = try parseSessionReview(
+            from: raw,
+            title: title,
+            personName: personName,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            segments: segments
+        )
         return LocalReviewRun(
             providerTitle: "Ollama",
             prompt: prompt,
@@ -104,6 +111,7 @@ enum AIProviderBridge: LocalReviewProvider {
     private func parseSessionReview(
         from output: String,
         title: String,
+        personName: String?,
         startedAt: Date,
         endedAt: Date,
         segments: [TimelineSegment]
@@ -111,16 +119,16 @@ enum AIProviderBridge: LocalReviewProvider {
         let jsonString = extractJSONObject(from: output)
         let payload = try decodeLocalSessionReviewPayload(from: jsonString)
         let normalizedHeadline = sanitizedReviewHeadline(
-            normalizedSecondPersonText(payload.headline),
+            normalizedReviewText(payload.headline, personName: personName),
             goal: title
         ).trimmedOrFallback("Session review ready.")
-        let normalizedSummary = normalizedSecondPersonText(payload.summary).trimmedOrFallback("The session completed with local evidence only.")
+        let normalizedSummary = normalizedReviewText(payload.summary, personName: personName).trimmedOrFallback("The session completed with local evidence only.")
         let parsedSummarySpans = normalizedRichSpans(payload.summarySpans)
         let normalizedSummarySpans = parsedSummarySpans.isEmpty
             ? inferredRichSpans(from: normalizedSummary, goal: title)
             : parsedSummarySpans
         let normalizedInterruptions = payload.interruptions
-            .map(normalizedSecondPersonText)
+            .map { normalizedReviewText($0, personName: personName) }
             .cleaned(limit: 3)
         let parsedInterruptionSpans = payload.interruptionSpans
             .prefix(3)
@@ -131,9 +139,9 @@ enum AIProviderBridge: LocalReviewProvider {
             }
             return inferredRichSpans(from: interruption, goal: title)
         }
-        let normalizedFocusAssessment = payload.focusAssessment.map(normalizedSecondPersonText)?.nilIfBlank
+        let normalizedFocusAssessment = payload.focusAssessment.map { normalizedReviewText($0, personName: personName) }?.nilIfBlank
         let normalizedConfidenceNotes = payload.confidenceNotes
-            .map(normalizedSecondPersonText)
+            .map { normalizedReviewText($0, personName: personName) }
             .cleaned(limit: 4)
         return SessionReview(
             sessionTitle: title,
@@ -187,6 +195,7 @@ enum AIProviderBridge: LocalReviewProvider {
         segments: [TimelineSegment],
         calendarTitles: [String]
     ) -> String {
+        let intent = TimelineDeriver.deriveIntent(from: title)
         let observedSegments = TimelineDeriver.observeSegments(segments, goal: title)
         let observability = TimelineDeriver.summarizeObservedSegments(observedSegments)
         let directEntities = dominantObservedEntityLabels(from: observedSegments, role: .direct)
@@ -224,7 +233,7 @@ enum AIProviderBridge: LocalReviewProvider {
         }.joined(separator: "\n")
 
         return """
-        You are reviewing a completed focused-work session from local desktop evidence.
+        You are reviewing a completed session from local desktop evidence.
         Write like a sharp, calm friend describing what happened in one short recap.
         The person's first name is \(personName?.nilIfBlank ?? "unknown").
 
@@ -235,16 +244,20 @@ enum AIProviderBridge: LocalReviewProvider {
         - headline under 18 words
         - summary under 45 words
         - be concrete and evidence-based
+        - evaluate the session relative to the stated intent, not against a universal definition of productivity
         - speak directly to the person who did the session using second person
         - never say "the user", "user", or "they" when describing the session
-        - you may use the person's first name at most once if it helps the tone feel more personal, but default to "you"
+        - default to "you"; do not narrate the person in third person and do not write phrases like "Aayush's session" or "their session"
+        - you may use the person's first name at most once, and only as direct address like "Aayush, ..."
         - prefer the timeline over isolated raw events
         - the main question is: did this block materially help the stated goal or not
+        - if the stated goal itself was to watch, browse, listen, or otherwise consume something, matching behavior can count as progress
+        - YouTube, X, Spotify, GitHub, or any other surface are not inherently good or bad; judge them only relative to the stated intent
         - optimize for usefulness to the person reviewing the session, not for completeness
         - mention only evidence that helped the goal, hurt the goal, or changed the outcome
         - ignore neutral background context unless it clearly changed the session
-        - treat direct work as actual execution on the goal, support work as adjacent but indirect progress, drift as off-goal activity, and breaks as intentional pauses
-        - if support work dominated while direct work stayed low, say the block stayed near the goal but did not move it much
+        - treat aligned activity as the main thread of the goal, adjacent activity as nearby but indirect, off-path activity as detours, and breaks as intentional pauses
+        - if adjacent activity dominated while aligned activity stayed low, say the block stayed near the goal but did not move it much
         - say plainly when the goal was displaced
         - never summarize behavior at the browser-shell level if a clearer viewed entity is known
         - avoid phrases like "in Google Chrome", "in Safari", or "exploring tabs" when you can name what was actually viewed
@@ -278,6 +291,8 @@ enum AIProviderBridge: LocalReviewProvider {
         - bad headline examples: "3:44 PM - 3:54 PM: YouTube Break instead of Logbook UI Work" / "YouTube, GitHub, Notion Calendar"
         - summary should answer three things in plain language: what helped, what got in the way, and whether the goal moved forward
         - if the goal barely moved, say that directly
+        - for watch, listen, or browse goals, avoid phrases like "limited progress", "didn't move the goal forward", or "stated goal"; say whether the session matched the intent and mention detours plainly
+        - when one specific video, song, page, repo, or file clearly dominated the block, mention it in the summary
         - never emit HTML or XML tags
 
         Good style example:
@@ -306,20 +321,30 @@ enum AIProviderBridge: LocalReviewProvider {
         summary: "You spent some of the block around Logbook UI work, but YouTube and short breaks absorbed enough time that the goal barely moved forward."
         interruptions: ["YouTube pulled a noticeable share of the block away from the UI work."]
 
+        Intent-sensitive example:
+        Session goal: I wanna just watch YouTube
+        If the session mostly stayed on one YouTube watch page with only a short detour elsewhere, that should be matched or partially matched, not missed.
+
         Session goal: \(title)
         Session time: \(ActivityFormatting.shortTime.string(from: startedAt)) to \(ActivityFormatting.shortTime.string(from: endedAt))
+        Derived intent:
+        - mode: \(intent.mode.rawValue)
+        - action: \(intent.action ?? "unknown")
+        - targets: \(intent.targets.joined(separator: " | ").nilIfBlank ?? "none")
+        - objects: \(intent.objects.joined(separator: " | ").nilIfBlank ?? "none")
+        - confidence: \(String(format: "%.2f", intent.confidence))
 
         Derived session summary:
-        - direct work: \(shortDurationLabel(for: observability.directSeconds))
-        - support work: \(shortDurationLabel(for: observability.supportSeconds))
-        - drift: \(shortDurationLabel(for: observability.driftSeconds))
+        - aligned activity: \(shortDurationLabel(for: observability.directSeconds))
+        - adjacent activity: \(shortDurationLabel(for: observability.supportSeconds))
+        - off-path activity: \(shortDurationLabel(for: observability.driftSeconds))
         - breaks: \(shortDurationLabel(for: observability.breakSeconds))
-        - longest direct run: \(shortDurationLabel(for: observability.longestDirectRunSeconds))
-        - drift interruptions: \(observability.driftInterruptions)
+        - longest aligned run: \(shortDurationLabel(for: observability.longestDirectRunSeconds))
+        - off-path interruptions: \(observability.driftInterruptions)
         - estimated goal progress: \(observability.goalProgressEstimate.rawValue)
-        - dominant direct entities: \(directEntities.joined(separator: " | ").nilIfBlank ?? "none")
-        - dominant support entities: \(supportEntities.joined(separator: " | ").nilIfBlank ?? "none")
-        - dominant drift entities: \(driftEntities.joined(separator: " | ").nilIfBlank ?? "none")
+        - dominant aligned entities: \(directEntities.joined(separator: " | ").nilIfBlank ?? "none")
+        - dominant adjacent entities: \(supportEntities.joined(separator: " | ").nilIfBlank ?? "none")
+        - dominant off-path entities: \(driftEntities.joined(separator: " | ").nilIfBlank ?? "none")
         - dominant break entities: \(breakEntities.joined(separator: " | ").nilIfBlank ?? "none")
 
         Timeline:
@@ -357,6 +382,46 @@ private func normalizedSecondPersonText(_ text: String) -> String {
 
     for (source, target) in replacements {
         value = value.replacingOccurrences(of: source, with: target)
+    }
+
+    return value
+}
+
+private func normalizedReviewText(_ text: String, personName: String?) -> String {
+    var value = normalizedSecondPersonText(text)
+
+    if let personName = personName?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !personName.isEmpty {
+        let escapedName = NSRegularExpression.escapedPattern(for: personName)
+        let patterns: [(String, String)] = [
+            ("\\b\(escapedName)'s\\s+session\\b", "Your session"),
+            ("\\b\(escapedName)'s\\b", "your"),
+            ("\\b\(escapedName)\\b", "you"),
+        ]
+
+        for (pattern, replacement) in patterns {
+            value = value.replacingOccurrences(
+                of: pattern,
+                with: replacement,
+                options: [.regularExpression, .caseInsensitive]
+            )
+        }
+    }
+
+    let genericReplacements: [(String, String)] = [
+        ("\\bthe stated goal\\b", "what you meant to do"),
+        ("\\blimited progress on what you meant to do\\b", "only partly matched what you meant to do"),
+        ("\\blimited progress on the goal\\b", "only partly matched what you meant to do"),
+        ("\\blimited progress toward the goal\\b", "only partly matched what you meant to do"),
+        ("\\blimited progress towards the goal\\b", "only partly matched what you meant to do"),
+    ]
+
+    for (pattern, replacement) in genericReplacements {
+        value = value.replacingOccurrences(
+            of: pattern,
+            with: replacement,
+            options: [.regularExpression, .caseInsensitive]
+        )
     }
 
     return value
@@ -895,7 +960,6 @@ private func cleanedTitleLabel(_ text: String) -> String {
 private func splitQuotedSegments(in text: String) -> [(text: String, isQuoted: Bool)] {
     let quotePairs: [Character: Character] = [
         "\"": "\"",
-        "'": "'",
         "“": "”",
         "‘": "’",
     ]

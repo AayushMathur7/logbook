@@ -1,85 +1,139 @@
-# Logbook
+# Log Book
 
-Logbook is a local-first macOS app for running intentional work sessions and getting an AI review of what actually happened during the block.
+Log Book is a local-first macOS app for running intentional sessions and getting a review of what actually happened on your machine during that block.
 
-The current product is not a passive timeline or a background daemon. It is a session-based app with four surfaces:
+The app is built around one loop:
 
-- `Session` — start a timed session or generate a review for the last `N` minutes
-- `History` — browse completed timed-session reviews
-- `Signals` — inspect raw captured events
-- `Settings` — capture rules, watch roots, and AI provider selection
+1. Write what you want to do.
+2. Start a timed session.
+3. Let Log Book capture local evidence during the block.
+4. End the session or let the timer finish.
+5. Read a short review of what happened and whether the session matched the stated intent.
 
-## What Exists Today
+## Current Product Shape
 
-The repository currently ships:
+Log Book is not an always-on memory product and it is not a passive life log.
+
+The app is session-bounded:
+
+- `Session` for starting a block, running it, generating the review, and reading the latest review
+- `History` for reviewing saved sessions again
+- `Settings` for capture toggles and local model configuration
+
+The review logic is now intent-aware. That means surfaces like `YouTube`, `X`, `Spotify`, or `GitHub` are not treated as inherently good or bad. They are judged relative to what you said you wanted to do in that session.
+
+Examples:
+
+- `watch YouTube` can count as a matched session if the block mostly stayed on YouTube
+- `deploy logbook to GitHub` can count GitHub, coding tools, and repo context as aligned or adjacent
+- `scroll X` can be valid if that was explicitly the stated intent
+
+## Architecture
+
+The repo currently ships:
 
 - a SwiftUI macOS app in `Sources/LogbookApp`
 - a shared core library in `Sources/LogbookCore`
 - a small CLI in `Sources/logbook`
 - a self-test runner in `Sources/logbookselftest`
-- local JSON persistence under `~/Library/Application Support/Logbook`
-- optional `codex` and `claude` CLI integrations for AI-written reviews
 
-## Core Workflow
+## Capture Model
 
-1. Enter a session goal and duration.
-2. Start the session.
-3. Let Logbook capture lightweight desktop signals.
-4. When the timer ends, Logbook sends the session evidence to `codex` or `claude`.
-5. Review:
-   - what you were actually doing
-   - whether it matched the goal
-   - what interrupted or took over
-   - key moments
-   - a trace of the captured evidence
-
-There is also a `Generate review` tester on the Session screen for reviewing the last `N` minutes without waiting for a timer.
-
-## Captured Signals
+Log Book captures lightweight local signals during a session.
 
 Current capture includes:
 
 - frontmost app activation, launch, and termination
 - wake and sleep
 - focused window title changes when Accessibility is granted
-- browser tab title + URL for supported browsers
-- Finder selection / front-window path when available
+- browser tab titles, URLs, and domains for supported browsers
+- Finder context when available
 - shell commands imported from `integrations/shell/logbook.zsh`
 - file activity under watched roots
 - clipboard changes with a short preview
-- manual quick notes and pinned session reviews
+- calendar context when access is granted
+
+The app does not capture screenshots, audio, OCR, camera, microphone, or keystrokes.
 
 ## Storage
 
-Current storage is JSON, not SQLite:
+Runtime storage is SQLite under:
 
-- `events.json`
-- `session-reviews.json`
-- `capture-settings.json`
+```text
+~/Library/Application Support/Logbook/logbook.sqlite
+```
 
-All are stored under `~/Library/Application Support/Logbook`.
+Saved data includes:
 
-## Quick Start
+- raw events
+- sessions
+- derived session segments
+- generated reviews
+- capture settings
+
+## Local Review Generation
+
+Log Book currently uses `Ollama` for local review generation.
+
+Important constraints:
+
+- localhost only
+- no cloud model fallback
+- no remote API hosts
+- reviews still work with a local fallback summary if Ollama is not configured or its response cannot be parsed
+
+The current default base URL is:
+
+```text
+http://127.0.0.1:11434
+```
+
+## Running the App
+
+From the repo root:
 
 ```bash
 cd /Users/aayush/ai-projects/logbook
 swift build
-bash scripts/check.sh
-swift run LogbookApp
+./.build/debug/LogbookApp
 ```
 
-Useful extras:
+If an older process is still running, quit it first or kill it before relaunching:
+
+```bash
+pkill -f LogbookApp || true
+cd /Users/aayush/ai-projects/logbook
+swift build
+./.build/debug/LogbookApp
+```
+
+Running the built binary directly is currently more reliable than `swift run LogbookApp` on this machine.
+
+## Validation
+
+Build:
+
+```bash
+swift build
+```
+
+Run the self-test suite:
+
+```bash
+swift run logbook-selftest
+```
+
+Useful CLI commands:
 
 ```bash
 swift run logbook view
 swift run logbook view --events --limit 20
 swift run logbook view --summary
-swift run logbook-selftest
 ```
 
 ## Shell Hook
 
-If you want exact terminal commands in reviews and traces, add this to `~/.zshrc`:
+If you want exact terminal commands to show up in captured evidence, add this to `~/.zshrc`:
 
 ```zsh
 source /Users/aayush/ai-projects/logbook/integrations/shell/logbook.zsh
@@ -87,25 +141,21 @@ source /Users/aayush/ai-projects/logbook/integrations/shell/logbook.zsh
 
 Then open a new shell session.
 
-## AI Providers
+## Privacy Notes
 
-Logbook currently supports:
+The app is designed to stay local:
 
-- `Codex CLI`
-- `Claude Code`
+- capture happens on-device
+- storage stays on-device
+- review generation stays local through Ollama
 
-The app shells out to the selected provider and stores:
+Privacy filtering and exclusions are configured in `Settings`.
 
-- the rendered review
-- the exact prompt
-- the raw provider response
+## Key Files
 
-The `Model I/O` section in the review UI shows that debug data.
-
-## Docs
-
-- `docs/v1-spec.md` — current product scope
-- `docs/technical-architecture.md` — actual runtime architecture
-- `docs/event-model.md` — captured event schema and sources
-- `docs/tracking-guide.md` — how session reviews are built
-- `docs/testing.md` — build and verification path
+- `Sources/LogbookApp/ContentView.swift` — main app surface and layout
+- `Sources/LogbookApp/AppModel.swift` — session lifecycle, persistence wiring, review orchestration
+- `Sources/LogbookApp/AIProviderBridge.swift` — Ollama integration and review prompt construction
+- `Sources/LogbookCore/TimelineDeriver.swift` — evidence segmentation and intent-aware alignment
+- `Sources/LogbookCore/SessionStore.swift` — SQLite persistence
+- `Sources/logbookselftest/main.swift` — self-test coverage

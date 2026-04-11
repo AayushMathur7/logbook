@@ -496,9 +496,18 @@ public final class SessionStore {
     }
 }
 
-public enum SessionStoreError: Error {
+public enum SessionStoreError: Error, LocalizedError {
     case unavailable
     case sqlite(message: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            return "Log Book could not open its local database."
+        case let .sqlite(message):
+            return message
+        }
+    }
 }
 
 private let jsonEncoder: JSONEncoder = {
