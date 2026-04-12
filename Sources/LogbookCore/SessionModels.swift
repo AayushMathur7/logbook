@@ -718,6 +718,87 @@ public struct StoredSessionReview: Hashable, Codable {
     }
 }
 
+public struct SessionReviewFeedback: Hashable, Codable {
+    public let sessionID: String
+    public let createdAt: Date
+    public let wasHelpful: Bool
+    public let note: String?
+    public let goalSnapshot: String
+    public let reviewHeadlineSnapshot: String
+    public let reviewSummarySnapshot: String
+    public let reviewTakeawaySnapshot: String?
+
+    public init(
+        sessionID: String,
+        createdAt: Date = Date(),
+        wasHelpful: Bool,
+        note: String? = nil,
+        goalSnapshot: String,
+        reviewHeadlineSnapshot: String,
+        reviewSummarySnapshot: String,
+        reviewTakeawaySnapshot: String? = nil
+    ) {
+        self.sessionID = sessionID
+        self.createdAt = createdAt
+        self.wasHelpful = wasHelpful
+        let trimmedNote = note?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.note = (trimmedNote?.isEmpty == false) ? trimmedNote : nil
+        self.goalSnapshot = goalSnapshot.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.reviewHeadlineSnapshot = reviewHeadlineSnapshot.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.reviewSummarySnapshot = reviewSummarySnapshot.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.reviewTakeawaySnapshot = reviewTakeawaySnapshot?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+public struct SessionReviewFeedbackExample: Hashable, Codable, Identifiable {
+    public enum Label: String, Hashable, Codable {
+        case confirmed
+        case correction
+    }
+
+    public let id: String
+    public let sessionID: String
+    public let createdAt: Date
+    public let goal: String
+    public let reviewSaid: String
+    public let userFeedback: String
+    public let label: Label
+
+    public init(
+        id: String = UUID().uuidString,
+        sessionID: String,
+        createdAt: Date,
+        goal: String,
+        reviewSaid: String,
+        userFeedback: String,
+        label: Label
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.createdAt = createdAt
+        self.goal = goal
+        self.reviewSaid = reviewSaid
+        self.userFeedback = userFeedback
+        self.label = label
+    }
+}
+
+public struct SessionReviewLearningMemory: Hashable, Codable {
+    public let updatedAt: Date
+    public let sourceFeedbackCount: Int
+    public let learnings: [String]
+
+    public init(
+        updatedAt: Date = Date(),
+        sourceFeedbackCount: Int,
+        learnings: [String]
+    ) {
+        self.updatedAt = updatedAt
+        self.sourceFeedbackCount = sourceFeedbackCount
+        self.learnings = learnings
+    }
+}
+
 public struct StoredSessionDetail: Hashable {
     public let session: StoredSession
     public let review: StoredSessionReview?

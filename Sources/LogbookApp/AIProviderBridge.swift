@@ -21,12 +21,19 @@ protocol LocalReviewProvider {
         configuration: OllamaConfiguration,
         title: String,
         personName: String?,
+        reviewLearnings: [String],
+        feedbackExamples: [SessionReviewFeedbackExample],
         startedAt: Date,
         endedAt: Date,
         events: [ActivityEvent],
         segments: [TimelineSegment],
         calendarTitles: [String]
     ) async throws -> LocalReviewRun
+    func summarizeLearningMemory(
+        configuration: OllamaConfiguration,
+        personName: String?,
+        feedbackExamples: [SessionReviewFeedbackExample]
+    ) async throws -> SessionReviewLearningMemory
 }
 
 enum AIProviderBridge: LocalReviewProvider {
@@ -45,6 +52,8 @@ enum AIProviderBridge: LocalReviewProvider {
         configuration: OllamaConfiguration,
         title: String,
         personName: String?,
+        reviewLearnings: [String],
+        feedbackExamples: [SessionReviewFeedbackExample],
         startedAt: Date,
         endedAt: Date,
         events: [ActivityEvent],
@@ -59,6 +68,8 @@ enum AIProviderBridge: LocalReviewProvider {
         let prompt = sessionReviewPrompt(
             title: title,
             personName: personName,
+            reviewLearnings: reviewLearnings,
+            feedbackExamples: feedbackExamples,
             startedAt: startedAt,
             endedAt: endedAt,
             events: events,
@@ -95,6 +106,35 @@ enum AIProviderBridge: LocalReviewProvider {
             rawResponse: raw,
             review: review
         )
+    }
+
+    func summarizeLearningMemory(
+        configuration: OllamaConfiguration,
+        personName: String?,
+        feedbackExamples: [SessionReviewFeedbackExample]
+    ) async throws -> SessionReviewLearningMemory {
+        let baseURL = try validatedBaseURL(from: configuration)
+        guard !configuration.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw OllamaError.missingModel
+        }
+
+        let prompt = feedbackLearningPrompt(personName: personName, feedbackExamples: feedbackExamples)
+
+        var request = URLRequest(url: baseURL.appending(path: "/api/generate"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = TimeInterval(max(configuration.timeoutSeconds, 10))
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            OllamaGenerateRequest(
+                model: configuration.modelName,
+                prompt: prompt,
+                stream: false
+            )
+        )
+
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let response = try JSONDecoder().decode(OllamaGenerateResponse.self, from: data)
+        return try parseLearningMemory(from: response.response, sourceFeedbackCount: feedbackExamples.count)
     }
 
     private func validatedBaseURL(from configuration: OllamaConfiguration) throws -> URL {
@@ -169,6 +209,8 @@ enum AIProviderBridge: LocalReviewProvider {
     private func sessionReviewPrompt(
         title: String,
         personName: String?,
+        reviewLearnings: [String],
+        feedbackExamples: [SessionReviewFeedbackExample],
         startedAt: Date,
         endedAt: Date,
         events: [ActivityEvent],
@@ -334,6 +376,17 @@ enum AIProviderBridge: LocalReviewProvider {
         </example>
         </examples>
 
+        <review_learnings>
+        These are weak hints learned from earlier feedback. They help with framing, but current session evidence always wins.
+        \(reviewLearnings.isEmpty ? "- none" : reviewLearnings.prefix(6).map { "- \($0)" }.joined(separator: "\n"))
+        </review_learnings>
+
+        <review_feedback_examples>
+        These are earlier examples of what the app said and how the person reacted.
+        Use them as grounding references, not templates to copy.
+        \(feedbackExamplesPromptBlock(feedbackExamples))
+        </review_feedback_examples>
+
         <session>
         <goal>\(title)</goal>
         <time>\(ActivityFormatting.shortTime.string(from: startedAt)) to \(ActivityFormatting.shortTime.string(from: endedAt))</time>
@@ -396,6 +449,10 @@ enum AIProviderBridge: LocalReviewProvider {
         <task>
         Write the four required lines using both the derived facts and the raw evidence.
         The derived facts are guidance, not a script. Use the raw evidence to decide what actually mattered.
+        Use review_learnings as weak framing hints.
+        Use review_feedback_examples as examples of what this person thought was right or wrong.
+        Do not repeat old example wording unless it truly fits the current session.
+        Do not let one old correction dominate the current session.
         HEADLINE should feel like the one-line title of the session review card.
         HEADLINE should be specific enough that someone could tell this session apart from another one.
         RECAP should explain what happened with concrete things and rough durations.
@@ -404,6 +461,61 @@ enum AIProviderBridge: LocalReviewProvider {
         </task>
         """
     }
+}
+
+private func feedbackExamplesPromptBlock(_ examples: [SessionReviewFeedbackExample]) -> String {
+    guard !examples.isEmpty else { return "- none" }
+
+    return examples.map { example in
+        """
+        - Goal: \(example.goal)
+          Review said: \(example.reviewSaid)
+          User feedback: \(example.userFeedback)
+          Label: \(example.label.rawValue)
+        """
+    }.joined(separator: "\n")
+}
+
+private func feedbackLearningPrompt(personName: String?, feedbackExamples: [SessionReviewFeedbackExample]) -> String {
+    let block = feedbackExamples.map { example in
+        """
+        - Goal: \(example.goal)
+          Review said: \(example.reviewSaid)
+          User feedback: \(example.userFeedback)
+          Label: \(example.label.rawValue)
+        """
+    }.joined(separator: "\n")
+
+    return """
+    <role>
+    You are summarizing past feedback about session reviews for a local-only desktop focus app.
+    The person's first name is \(personName?.nilIfBlank ?? "unknown"), but do not use their name in the output.
+    </role>
+
+    <output_contract>
+    Return strict JSON with this shape only:
+    {"learnings":["...", "..."]}
+    </output_contract>
+
+    <style_rules>
+    - Write 3 to 6 learnings.
+    - Each learning must be short.
+    - Each learning must be user-specific review-framing guidance.
+    - Do not mention session IDs.
+    - Do not mention prompt instructions, model behavior, or internal tools.
+    - Do not make claims stronger than the feedback supports.
+    - Prefer guidance like "mention X when it happened" or "do not frame Y as drift by default".
+    </style_rules>
+
+    <feedback_examples>
+    \(block.isEmpty ? "- none" : block)
+    </feedback_examples>
+
+    <task>
+    Summarize the feedback examples into reusable guidance for how future session reviews should be framed for this person.
+    Return only strict JSON.
+    </task>
+    """
 }
 
 private func goalSpecificityLabel(for goal: String, intent: SessionIntent) -> String {
@@ -816,6 +928,10 @@ private struct LocalSessionReviewPayload {
     let takeaway: String
 }
 
+private struct LearningMemoryPayload: Decodable {
+    let learnings: [String]
+}
+
 private func parsePlainTextReviewPayload(from text: String) -> LocalSessionReviewPayload {
     let lines = text
         .split(whereSeparator: \.isNewline)
@@ -867,6 +983,25 @@ private func parsePlainTextReviewPayload(from text: String) -> LocalSessionRevie
         verdict: verdict ?? inferredVerdict(from: [headline, recap, takeaway].compactMap { $0 }.joined(separator: " ")),
         recap: recap?.trimmedOrFallback("The session completed with local evidence only.") ?? "The session completed with local evidence only.",
         takeaway: takeaway?.trimmedOrFallback("The outcome stayed unclear.") ?? "The outcome stayed unclear."
+    )
+}
+
+private func parseLearningMemory(from text: String, sourceFeedbackCount: Int) throws -> SessionReviewLearningMemory {
+    let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}") else {
+        throw SessionStoreError.sqlite(message: "The learning summary did not return valid JSON.")
+    }
+
+    let jsonString = String(raw[start...end])
+    let data = Data(jsonString.utf8)
+    let payload = try JSONDecoder().decode(LearningMemoryPayload.self, from: data)
+    let learnings = payload.learnings
+        .map { $0.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+
+    return SessionReviewLearningMemory(
+        sourceFeedbackCount: sourceFeedbackCount,
+        learnings: Array(learnings.prefix(6))
     )
 }
 

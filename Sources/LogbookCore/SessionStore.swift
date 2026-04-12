@@ -130,6 +130,221 @@ public final class SessionStore {
         try execute(db, sql: "UPDATE session_reviews SET debug_prompt = NULL, debug_raw_response = NULL")
     }
 
+    public func saveReviewFeedback(_ feedback: SessionReviewFeedback) throws {
+        guard let db else { throw SessionStoreError.unavailable }
+        try execute(
+            db,
+            sql: """
+            INSERT INTO session_review_feedback (
+                session_id, created_at, was_helpful, note, goal_snapshot, review_headline_snapshot, review_summary_snapshot, review_takeaway_snapshot
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                created_at = excluded.created_at,
+                was_helpful = excluded.was_helpful,
+                note = excluded.note,
+                goal_snapshot = excluded.goal_snapshot,
+                review_headline_snapshot = excluded.review_headline_snapshot,
+                review_summary_snapshot = excluded.review_summary_snapshot,
+                review_takeaway_snapshot = excluded.review_takeaway_snapshot
+            """,
+            bind: { statement in
+                sqlite3_bind_text(statement, 1, feedback.sessionID, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_double(statement, 2, feedback.createdAt.timeIntervalSince1970)
+                sqlite3_bind_int(statement, 3, feedback.wasHelpful ? 1 : 0)
+                bindNullableText(feedback.note, to: statement, index: 4)
+                sqlite3_bind_text(statement, 5, feedback.goalSnapshot, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(statement, 6, feedback.reviewHeadlineSnapshot, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(statement, 7, feedback.reviewSummarySnapshot, -1, SQLITE_TRANSIENT)
+                bindNullableText(feedback.reviewTakeawaySnapshot, to: statement, index: 8)
+            }
+        )
+    }
+
+    public func reviewFeedback(sessionID: String) -> SessionReviewFeedback? {
+        guard
+            let db,
+            let row = queryRow(db, sql: """
+                SELECT session_id, created_at, was_helpful, note, goal_snapshot, review_headline_snapshot, review_summary_snapshot, review_takeaway_snapshot
+                FROM session_review_feedback
+                WHERE session_id = ?
+                LIMIT 1
+                """, bind: {
+                    sqlite3_bind_text($0, 1, sessionID, -1, SQLITE_TRANSIENT)
+                }),
+            let storedSessionID = row["session_id"] as? String,
+            let createdAtValue = row["created_at"] as? Double,
+            let wasHelpfulValue = row["was_helpful"] as? Int
+        else {
+            return nil
+        }
+
+        return SessionReviewFeedback(
+            sessionID: storedSessionID,
+            createdAt: Date(timeIntervalSince1970: createdAtValue),
+            wasHelpful: wasHelpfulValue != 0,
+            note: row["note"] as? String,
+            goalSnapshot: row["goal_snapshot"] as? String ?? "",
+            reviewHeadlineSnapshot: row["review_headline_snapshot"] as? String ?? "",
+            reviewSummarySnapshot: row["review_summary_snapshot"] as? String ?? "",
+            reviewTakeawaySnapshot: row["review_takeaway_snapshot"] as? String
+        )
+    }
+
+    public func recentReviewFeedback(limit: Int = 12, excludingSessionID: String? = nil) -> [SessionReviewFeedback] {
+        guard let db else { return [] }
+        let sql: String
+        if excludingSessionID == nil {
+            sql = """
+            SELECT session_id, created_at, was_helpful, note, goal_snapshot, review_headline_snapshot, review_summary_snapshot, review_takeaway_snapshot
+            FROM session_review_feedback
+            ORDER BY created_at DESC
+            LIMIT ?
+            """
+        } else {
+            sql = """
+            SELECT session_id, created_at, was_helpful, note, goal_snapshot, review_headline_snapshot, review_summary_snapshot, review_takeaway_snapshot
+            FROM session_review_feedback
+            WHERE session_id != ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """
+        }
+
+        guard let statement = prepare(db, sql: sql) else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        if let excludingSessionID {
+            sqlite3_bind_text(statement, 1, excludingSessionID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(statement, 2, Int32(limit))
+        } else {
+            sqlite3_bind_int(statement, 1, Int32(limit))
+        }
+
+        var rows: [SessionReviewFeedback] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let sessionID = string(from: statement, index: 0) ?? UUID().uuidString
+            let createdAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 1))
+            let wasHelpful = sqlite3_column_int(statement, 2) != 0
+            let note = string(from: statement, index: 3)
+            rows.append(
+                SessionReviewFeedback(
+                    sessionID: sessionID,
+                    createdAt: createdAt,
+                    wasHelpful: wasHelpful,
+                    note: note,
+                    goalSnapshot: string(from: statement, index: 4) ?? "",
+                    reviewHeadlineSnapshot: string(from: statement, index: 5) ?? "",
+                    reviewSummarySnapshot: string(from: statement, index: 6) ?? "",
+                    reviewTakeawaySnapshot: string(from: statement, index: 7)
+                )
+            )
+        }
+
+        return rows
+    }
+
+    public func promptReadyReviewFeedbackExamples(limit: Int = 4, maxPerPolarity: Int = 2) -> [SessionReviewFeedbackExample] {
+        let feedback = recentReviewFeedback(limit: 100)
+        var seenNotes: Set<String> = []
+        var positiveCount = 0
+        var negativeCount = 0
+        var examples: [SessionReviewFeedbackExample] = []
+
+        for item in feedback {
+            guard let note = sanitizedFeedbackNote(item.note) else { continue }
+            let noteKey = note.lowercased()
+            guard seenNotes.insert(noteKey).inserted else { continue }
+
+            if item.wasHelpful {
+                guard positiveCount < maxPerPolarity else { continue }
+                positiveCount += 1
+            } else {
+                guard negativeCount < maxPerPolarity else { continue }
+                negativeCount += 1
+            }
+
+            examples.append(
+                SessionReviewFeedbackExample(
+                    sessionID: item.sessionID,
+                    createdAt: item.createdAt,
+                    goal: item.goalSnapshot,
+                    reviewSaid: combinedReviewedResponse(from: item),
+                    userFeedback: note,
+                    label: item.wasHelpful ? .confirmed : .correction
+                )
+            )
+
+            if examples.count >= limit { break }
+        }
+
+        return examples
+    }
+
+    public func validReviewFeedbackExamples(limit: Int = 20) -> [SessionReviewFeedbackExample] {
+        recentReviewFeedback(limit: 200)
+            .compactMap { item in
+                guard let note = sanitizedFeedbackNote(item.note) else { return nil }
+                return SessionReviewFeedbackExample(
+                    sessionID: item.sessionID,
+                    createdAt: item.createdAt,
+                    goal: item.goalSnapshot,
+                    reviewSaid: combinedReviewedResponse(from: item),
+                    userFeedback: note,
+                    label: item.wasHelpful ? .confirmed : .correction
+                )
+            }
+            .dedupedByFeedbackNote()
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    public func saveReviewLearningMemory(_ memory: SessionReviewLearningMemory) throws {
+        guard let db else { throw SessionStoreError.unavailable }
+        let json = try jsonString(for: memory.learnings)
+        try execute(
+            db,
+            sql: """
+            INSERT INTO review_learning_memory (
+                id, updated_at, source_feedback_count, learning_json
+            ) VALUES (1, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                source_feedback_count = excluded.source_feedback_count,
+                learning_json = excluded.learning_json
+            """,
+            bind: { statement in
+                sqlite3_bind_double(statement, 1, memory.updatedAt.timeIntervalSince1970)
+                sqlite3_bind_int(statement, 2, Int32(memory.sourceFeedbackCount))
+                sqlite3_bind_text(statement, 3, json, -1, SQLITE_TRANSIENT)
+            }
+        )
+    }
+
+    public func reviewLearningMemory() -> SessionReviewLearningMemory? {
+        guard
+            let db,
+            let row = queryRow(db, sql: """
+                SELECT updated_at, source_feedback_count, learning_json
+                FROM review_learning_memory
+                WHERE id = 1
+                LIMIT 1
+                """),
+            let updatedAtValue = row["updated_at"] as? Double,
+            let sourceFeedbackCount = row["source_feedback_count"] as? Int,
+            let learningJSON = row["learning_json"] as? String,
+            let data = learningJSON.data(using: .utf8),
+            let learnings = try? jsonDecoder.decode([String].self, from: data)
+        else {
+            return nil
+        }
+
+        return SessionReviewLearningMemory(
+            updatedAt: Date(timeIntervalSince1970: updatedAtValue),
+            sourceFeedbackCount: sourceFeedbackCount,
+            learnings: learnings
+        )
+    }
+
     public func saveSession(
         _ session: StoredSession,
         review: StoredSessionReview?,
@@ -295,6 +510,7 @@ public final class SessionStore {
 
     public func deleteSession(id: String) throws {
         guard let db else { throw SessionStoreError.unavailable }
+        try execute(db, sql: "DELETE FROM session_review_feedback WHERE session_id = ?", bind: { sqlite3_bind_text($0, 1, id, -1, SQLITE_TRANSIENT) })
         try execute(db, sql: "DELETE FROM session_reviews WHERE session_id = ?", bind: { sqlite3_bind_text($0, 1, id, -1, SQLITE_TRANSIENT) })
         try execute(db, sql: "DELETE FROM session_segments WHERE session_id = ?", bind: { sqlite3_bind_text($0, 1, id, -1, SQLITE_TRANSIENT) })
         try execute(db, sql: "DELETE FROM sessions WHERE id = ?", bind: { sqlite3_bind_text($0, 1, id, -1, SQLITE_TRANSIENT) })
@@ -488,11 +704,33 @@ public final class SessionStore {
                 FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS session_review_feedback (
+                session_id TEXT PRIMARY KEY,
+                created_at REAL NOT NULL,
+                was_helpful INTEGER NOT NULL,
+                note TEXT,
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS review_learning_memory (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                updated_at REAL NOT NULL,
+                source_feedback_count INTEGER NOT NULL,
+                learning_json TEXT NOT NULL
+            )
+            """,
         ]
 
         for statement in statements {
             _ = sqlite3_exec(db, statement, nil, nil, nil)
         }
+
+        ensureColumn(on: db, table: "session_review_feedback", name: "goal_snapshot", definition: "TEXT NOT NULL DEFAULT ''")
+        ensureColumn(on: db, table: "session_review_feedback", name: "review_headline_snapshot", definition: "TEXT NOT NULL DEFAULT ''")
+        ensureColumn(on: db, table: "session_review_feedback", name: "review_summary_snapshot", definition: "TEXT NOT NULL DEFAULT ''")
+        ensureColumn(on: db, table: "session_review_feedback", name: "review_takeaway_snapshot", definition: "TEXT")
     }
 }
 
@@ -630,8 +868,64 @@ private func currentSQLiteError(on db: OpaquePointer?) -> String {
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
+private func ensureColumn(on db: OpaquePointer?, table tableName: String, name: String, definition: String) {
+    guard let db else { return }
+    guard !table(tableName, hasColumn: name, on: db) else { return }
+    _ = sqlite3_exec(db, "ALTER TABLE \(tableName) ADD COLUMN \(name) \(definition)", nil, nil, nil)
+}
+
+private func table(_ table: String, hasColumn name: String, on db: OpaquePointer?) -> Bool {
+    guard let db, let statement = prepare(db, sql: "PRAGMA table_info(\(table))") else {
+        return false
+    }
+    defer { sqlite3_finalize(statement) }
+
+    while sqlite3_step(statement) == SQLITE_ROW {
+        if string(from: statement, index: 1) == name {
+            return true
+        }
+    }
+    return false
+}
+
+private func sanitizedFeedbackNote(_ note: String?) -> String? {
+    guard let note else { return nil }
+    let collapsed = note
+        .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard collapsed.count >= 8 else { return nil }
+    let lowered = collapsed.lowercased()
+    let ignored = Set(["ok", "okay", "good", "bad", "wrong", "idk", "nah", "no", "yes"])
+    return ignored.contains(lowered) ? nil : collapsed
+}
+
+private func combinedReviewedResponse(from feedback: SessionReviewFeedback) -> String {
+    let parts = [
+        feedback.reviewHeadlineSnapshot.trimmingCharacters(in: .whitespacesAndNewlines),
+        feedback.reviewSummarySnapshot.trimmingCharacters(in: .whitespacesAndNewlines),
+        feedback.reviewTakeawaySnapshot?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+    ].filter { !$0.isEmpty }
+    return parts.joined(separator: " ")
+}
+
 private extension Array {
     var nonEmpty: Self? {
         isEmpty ? nil : self
+    }
+}
+
+private extension Array where Element == SessionReviewFeedbackExample {
+    func dedupedByFeedbackNote() -> [SessionReviewFeedbackExample] {
+        var seen: Set<String> = []
+        var result: [SessionReviewFeedbackExample] = []
+
+        for item in self {
+            let key = item.userFeedback.lowercased()
+            if seen.insert(key).inserted {
+                result.append(item)
+            }
+        }
+
+        return result
     }
 }

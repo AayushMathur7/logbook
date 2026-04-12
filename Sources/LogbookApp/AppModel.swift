@@ -75,6 +75,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var historySessions: [StoredSession] = []
     @Published private(set) var selectedHistoryDetail: StoredSessionDetail?
     @Published private(set) var reviewInFlightSessionID: String?
+    @Published private(set) var latestSessionID: String?
     @Published var showPermissionOnboarding = true
 
     private let monitor = ActivityMonitor()
@@ -629,6 +630,32 @@ final class AppModel: ObservableObject {
         selectedHistoryDetail = nil
     }
 
+    func reviewFeedback(for sessionID: String) -> SessionReviewFeedback? {
+        store.reviewFeedback(sessionID: sessionID)
+    }
+
+    func saveReviewFeedback(sessionID: String, review: SessionReview, wasHelpful: Bool, note: String? = nil) {
+        do {
+            try store.saveReviewFeedback(
+                SessionReviewFeedback(
+                    sessionID: sessionID,
+                    wasHelpful: wasHelpful,
+                    note: note,
+                    goalSnapshot: review.sessionTitle,
+                    reviewHeadlineSnapshot: review.headline,
+                    reviewSummarySnapshot: review.summary,
+                    reviewTakeawaySnapshot: review.focusAssessment
+                )
+            )
+            errorMessage = nil
+            Task { [weak self] in
+                await self?.refreshReviewLearningMemory()
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func restorePrimarySessionSurface(preferred state: SessionScreenState? = nil) {
         if activeSession != nil {
             surfaceState = .running
@@ -891,6 +918,8 @@ final class AppModel: ObservableObject {
                     configuration: captureSettings.ollama,
                     title: context.title,
                     personName: reviewDisplayName,
+                    reviewLearnings: store.reviewLearningMemory()?.learnings ?? [],
+                    feedbackExamples: store.promptReadyReviewFeedbackExamples(),
                     startedAt: context.startedAt,
                     endedAt: context.endedAt,
                     events: context.events,
@@ -1052,15 +1081,34 @@ final class AppModel: ObservableObject {
 
     private func hydrateLatestSession() {
         if let latest = store.latestSessionDetail() {
+            latestSessionID = latest.session.id
             lastSessionReview = latest.review?.review
             lastSessionReviewProvider = latest.review?.providerTitle ?? ""
             lastSessionReviewPrompt = latest.review?.debugPrompt ?? ""
             lastSessionReviewRawResponse = latest.review?.debugRawResponse ?? ""
         } else {
+            latestSessionID = nil
             lastSessionReview = nil
             lastSessionReviewProvider = ""
             lastSessionReviewPrompt = ""
             lastSessionReviewRawResponse = ""
+        }
+    }
+
+    private func refreshReviewLearningMemory() async {
+        let examples = store.validReviewFeedbackExamples(limit: 20)
+        guard examples.count >= 3 else { return }
+        guard !captureSettings.ollama.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        do {
+            let memory = try await reviewProvider.summarizeLearningMemory(
+                configuration: captureSettings.ollama,
+                personName: reviewDisplayName,
+                feedbackExamples: examples
+            )
+            try store.saveReviewLearningMemory(memory)
+        } catch {
+            // Keep prior learning memory on failure.
         }
     }
 

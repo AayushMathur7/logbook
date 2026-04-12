@@ -27,6 +27,9 @@ enum LogbookSelfTest {
             ("timeline merges adjacent matching events", testTimelineMergesMatchingEvents),
             ("timeline infers file context from editor titles", testTimelineInfersEditorFileContext),
             ("timeline strips browser chrome from generic titles", testTimelineCleansBrowserTitles),
+            ("review feedback overwrites and keeps snapshots", testReviewFeedbackOverwriteAndSnapshots),
+            ("prompt-ready feedback examples filter noise", testPromptReadyFeedbackExampleFiltering),
+            ("review learning memory round trips", testReviewLearningMemoryRoundTrip),
         ]
 
         let startedAt = Date()
@@ -573,6 +576,164 @@ enum LogbookSelfTest {
         let segments = TimelineDeriver.deriveSegments(from: events, sessionEnd: now.addingTimeInterval(60))
         try require(segments.count == 1, "expected one browser segment")
         try require(segments[0].primaryLabel == "New tab", "expected browser chrome suffix to be stripped")
+    }
+
+    static func testReviewFeedbackOverwriteAndSnapshots() throws {
+        let store = makeTemporaryStore()
+        let sessionID = "session-feedback-overwrite"
+        try seedSession(store: store, sessionID: sessionID, goal: "Ship settings UI")
+
+        try store.saveReviewFeedback(
+            SessionReviewFeedback(
+                sessionID: sessionID,
+                wasHelpful: false,
+                note: "Mention that GitHub auth did happen.",
+                goalSnapshot: "Ship settings UI",
+                reviewHeadlineSnapshot: "YouTube won",
+                reviewSummarySnapshot: "You watched YouTube instead of shipping the UI.",
+                reviewTakeawaySnapshot: "The task never really started."
+            )
+        )
+
+        try store.saveReviewFeedback(
+            SessionReviewFeedback(
+                sessionID: sessionID,
+                wasHelpful: true,
+                note: "This version is much closer to what happened.",
+                goalSnapshot: "Ship settings UI",
+                reviewHeadlineSnapshot: "GitHub showed up, but YouTube won.",
+                reviewSummarySnapshot: "You reached GitHub briefly, then drifted back to YouTube.",
+                reviewTakeawaySnapshot: "You touched the task, but it stayed brief."
+            )
+        )
+
+        let saved = store.reviewFeedback(sessionID: sessionID)
+        try require(saved != nil, "expected saved feedback")
+        try require(saved?.wasHelpful == true, "expected latest feedback to overwrite prior value")
+        try require(saved?.reviewHeadlineSnapshot == "GitHub showed up, but YouTube won.", "expected latest headline snapshot")
+        try require(saved?.reviewTakeawaySnapshot == "You touched the task, but it stayed brief.", "expected latest takeaway snapshot")
+    }
+
+    static func testPromptReadyFeedbackExampleFiltering() throws {
+        let store = makeTemporaryStore()
+
+        try seedFeedback(
+            store: store,
+            sessionID: "s1",
+            helpful: false,
+            note: "Mention that GitHub auth happened even if it was brief.",
+            goal: "deploy logbook to github",
+            headline: "GitHub showed up, but YouTube won.",
+            summary: "You reached GitHub, but YouTube still took more of the block."
+        )
+        try seedFeedback(
+            store: store,
+            sessionID: "s2",
+            helpful: true,
+            note: "This was right. Watching YouTube was the actual goal.",
+            goal: "I wanna just watch YouTube",
+            headline: "YouTube stayed front and center.",
+            summary: "You spent most of the block on YouTube."
+        )
+        try seedFeedback(
+            store: store,
+            sessionID: "s3",
+            helpful: false,
+            note: "wrong",
+            goal: "work on ui",
+            headline: "Neutral activity dominated this block.",
+            summary: "You moved between apps without a clear thread."
+        )
+        try seedFeedback(
+            store: store,
+            sessionID: "s4",
+            helpful: false,
+            note: "Mention that GitHub auth happened even if it was brief.",
+            goal: "deploy logbook to github",
+            headline: "GitHub was invisible.",
+            summary: "The review missed the GitHub step."
+        )
+        try seedFeedback(
+            store: store,
+            sessionID: "s5",
+            helpful: true,
+            note: "Good call on treating Spotify as background.",
+            goal: "Help me get my day ready",
+            headline: "Setup time got split with music.",
+            summary: "Spotify was visible during the block."
+        )
+
+        let examples = store.promptReadyReviewFeedbackExamples()
+        try require(examples.count == 3, "expected 3 prompt-ready examples after filtering noise and duplicates, got \(examples.count)")
+        try require(examples.contains(where: { $0.label == .confirmed }), "expected at least one confirmed example")
+        try require(examples.contains(where: { $0.label == .correction }), "expected at least one correction example")
+        try require(!examples.contains(where: { $0.userFeedback.lowercased() == "wrong" }), "expected noisy short feedback to be removed")
+    }
+
+    static func testReviewLearningMemoryRoundTrip() throws {
+        let store = makeTemporaryStore()
+        let memory = SessionReviewLearningMemory(
+            sourceFeedbackCount: 4,
+            learnings: [
+                "When the goal is intentional watching, do not frame YouTube as drift by default.",
+                "If GitHub auth or repo steps happened, mention them even when they were brief.",
+            ]
+        )
+
+        try store.saveReviewLearningMemory(memory)
+        let loaded = store.reviewLearningMemory()
+
+        try require(loaded != nil, "expected saved learning memory")
+        try require(loaded?.sourceFeedbackCount == 4, "expected source feedback count to round trip")
+        try require(loaded?.learnings.count == 2, "expected learnings to round trip")
+        try require(loaded?.learnings.first?.contains("YouTube") == true, "expected first learning to persist")
+    }
+
+    static func makeTemporaryStore() -> SessionStore {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("logbook-selftest-\(UUID().uuidString)")
+            .appendingPathExtension("sqlite")
+        return SessionStore(path: path)
+    }
+
+    static func seedSession(store: SessionStore, sessionID: String, goal: String) throws {
+        let now = Date()
+        try store.saveSession(
+            StoredSession(
+                id: sessionID,
+                goal: goal,
+                startedAt: now,
+                endedAt: now.addingTimeInterval(300),
+                reviewStatus: .ready,
+                primaryLabels: []
+            ),
+            review: nil,
+            segments: [],
+            rawEventCount: 0
+        )
+    }
+
+    static func seedFeedback(
+        store: SessionStore,
+        sessionID: String,
+        helpful: Bool,
+        note: String,
+        goal: String,
+        headline: String,
+        summary: String
+    ) throws {
+        try seedSession(store: store, sessionID: sessionID, goal: goal)
+        try store.saveReviewFeedback(
+            SessionReviewFeedback(
+                sessionID: sessionID,
+                wasHelpful: helpful,
+                note: note,
+                goalSnapshot: goal,
+                reviewHeadlineSnapshot: headline,
+                reviewSummarySnapshot: summary,
+                reviewTakeawaySnapshot: helpful ? "This framing worked." : "This framing missed the point."
+            )
+        )
     }
 }
 

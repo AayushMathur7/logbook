@@ -142,7 +142,7 @@ struct ContentView: View {
                 centeredPrimaryContent(generatingView)
             case .reviewReady:
                 if let review = model.lastSessionReview {
-                    centeredPrimaryContent(reviewDetail(review: review, allowRetry: true, allowNextSession: true))
+                    centeredPrimaryContent(reviewDetail(review: review, sessionID: model.latestSessionID, allowRetry: true, allowNextSession: true))
                 } else {
                     centeredPrimaryContent(setupView)
                 }
@@ -341,7 +341,7 @@ struct ContentView: View {
                     Group {
                         if let detail = model.selectedHistoryDetail {
                             if let review = detail.review?.review {
-                                reviewDetail(review: review, allowRetry: false, allowNextSession: false)
+                                reviewDetail(review: review, sessionID: detail.session.id, allowRetry: false, allowNextSession: false)
                             } else {
                                 sessionTimelineOnly(detail: detail)
                             }
@@ -364,7 +364,7 @@ struct ContentView: View {
         }
     }
 
-    private func reviewDetail(review: SessionReview, allowRetry: Bool, allowNextSession: Bool) -> some View {
+    private func reviewDetail(review: SessionReview, sessionID: String?, allowRetry: Bool, allowNextSession: Bool) -> some View {
         VStack(alignment: .leading, spacing: 28) {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 6) {
@@ -430,6 +430,11 @@ struct ContentView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(LogbookStyle.subtleText)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let sessionID {
+                    ReviewLearningBar(model: model, sessionID: sessionID, review: review)
+                        .padding(.top, 2)
                 }
             }
         }
@@ -1132,6 +1137,158 @@ private struct HistoryIconButton: View {
         .buttonStyle(.plain)
         .help(title)
         .onHover { isHovering = $0 }
+    }
+}
+
+private struct ReviewLearningBar: View {
+    @ObservedObject var model: AppModel
+    let sessionID: String
+    let review: SessionReview
+
+    @State private var storedFeedback: SessionReviewFeedback?
+    @State private var showCorrectionField = false
+    @State private var correctionDraft = ""
+    @State private var pendingHelpfulValue = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                LearningIconButton(
+                    title: "Helpful",
+                    systemImage: "hand.thumbsup",
+                    isSelected: storedFeedback?.wasHelpful == true
+                ) {
+                    pendingHelpfulValue = true
+                    correctionDraft = storedFeedback?.wasHelpful == true ? (storedFeedback?.note ?? correctionDraft) : ""
+                    showCorrectionField = true
+                }
+
+                LearningIconButton(
+                    title: "Needs work",
+                    systemImage: "hand.thumbsdown",
+                    isSelected: storedFeedback?.wasHelpful == false
+                ) {
+                    pendingHelpfulValue = false
+                    showCorrectionField = true
+                    correctionDraft = storedFeedback?.wasHelpful == false ? (storedFeedback?.note ?? correctionDraft) : ""
+                }
+
+                if storedFeedback != nil {
+                    Text("Saved")
+                        .font(.system(size: 11))
+                        .foregroundStyle(LogbookStyle.subtleText.opacity(0.72))
+                }
+            }
+
+            if showCorrectionField {
+                HStack(spacing: 6) {
+                    TextField(feedbackPlaceholder, text: $correctionDraft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .foregroundStyle(LogbookStyle.inputText)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(LogbookStyle.inputFill)
+                        )
+
+                    Button {
+                        let note = correctionDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        model.saveReviewFeedback(sessionID: sessionID, review: review, wasHelpful: pendingHelpfulValue, note: note)
+                        storedFeedback = model.reviewFeedback(for: sessionID)
+                        showCorrectionField = false
+                        correctionDraft = storedFeedback?.note ?? ""
+                    } label: {
+                        Text("Save")
+                            .font(.system(size: 12, weight: .medium))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(LogbookStyle.badgeFill)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(LogbookStyle.cardStroke, lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(correctionDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .opacity(correctionDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.45 : 1)
+                }
+            }
+        }
+        .onAppear {
+            refresh()
+        }
+        .onChange(of: sessionID) { _ in
+            refresh()
+        }
+    }
+
+    private func refresh() {
+        storedFeedback = model.reviewFeedback(for: sessionID)
+        if let storedFeedback {
+            pendingHelpfulValue = storedFeedback.wasHelpful
+            correctionDraft = storedFeedback.note ?? ""
+        } else {
+            pendingHelpfulValue = false
+            correctionDraft = ""
+        }
+        showCorrectionField = false
+    }
+
+    private var feedbackPlaceholder: String {
+        pendingHelpfulValue ? "What was right about this review?" : "What did I miss or get wrong?"
+    }
+}
+
+private struct LearningIconButton: View {
+    let title: String
+    let systemImage: String
+    let isSelected: Bool
+    var isDisabled = false
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(foregroundColor)
+                .frame(width: 26, height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(backgroundColor)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(strokeColor, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.45 : 1)
+        .help(title)
+        .onHover { isHovering = $0 }
+    }
+
+    private var foregroundColor: Color {
+        if isDisabled { return LogbookStyle.subtleText.opacity(0.6) }
+        if isSelected { return LogbookStyle.text }
+        return isHovering ? LogbookStyle.text : LogbookStyle.subtleText
+    }
+
+    private var backgroundColor: Color {
+        if isSelected { return LogbookStyle.badgeFill }
+        return isHovering ? LogbookStyle.badgeFill.opacity(0.82) : Color.clear
+    }
+
+    private var strokeColor: Color {
+        if isSelected || isHovering { return LogbookStyle.cardStroke }
+        return Color.clear
     }
 }
 
