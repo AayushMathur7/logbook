@@ -4,16 +4,18 @@
 
 The core artifact in the current app is the session review.
 
-It is generated from:
+It is built from:
 
 - the user-entered session goal
 - the session time range
 - all events captured during that range
-- local enrichments such as app durations, repo hints, and trace lines
+- derived timeline segments and intent observations
+- nearby calendar titles when that source is enabled
+- saved feedback from earlier reviews
 
 ## Prompt Inputs
 
-The prompt sent to `codex` or `claude` includes:
+The prompt sent to the local model includes:
 
 - session goal
 - start and end time
@@ -21,62 +23,42 @@ The prompt sent to `codex` or `claude` includes:
 - top titles
 - top URLs and paths
 - command activity
-- app-switch count
-- app durations
-- inferred repo
-- media summary
-- clipboard preview
-- a timestamped trace
+- clipboard previews
+- nearby calendar titles
+- a compact timeline of the session
+- intent-aware observations about direct work, support work, drift, and breaks
+- an allowlist of evidence mentions so the review stays grounded in what was actually captured
 
 ## Output Shape
 
-The provider is asked to return structured JSON for:
+The provider is asked for a short structured response that maps into:
 
-- `headline`
-- `why`
-- `reasons`
-- `key moments`
-- `dominant thread`
-- `break point`
+- verdict
+- headline
+- recap
+- takeaway
 
-The app then enriches that output with local metadata and renders:
+The app then enriches that output locally and renders:
 
 - headline
-- goal
-- time range
-- why
-- key moments
-- trace
-- model prompt / raw response
+- recap with inline chips and links when available
+- takeaway
+- dominant apps and session path hints
+- attention segments for the saved review
 
-## Timed Session vs Test Review
-
-### Timed session
-
-- starts from the Session screen
-- ends via the timer or `End session now`
-- review is stored in History
-
-### Test review
-
-- uses the `Generate review` controls
-- reviews the last `N` minutes
-- is useful for prompt tuning and UI tuning
-- is not stored in History
-
-## What Makes A Good Review
+## Review Quality Bar
 
 A useful review should answer:
 
 - what the user was actually doing
 - whether that matched the goal
 - what interrupted or displaced the block
-- when the important shifts happened
+- where the main thread held together or broke down
 
 It should not degrade into a play-by-play of every event.
 
 ## Why Signals Still Matter
 
-The Signals view exists for one reason:
+When the review feels wrong, the underlying evidence still matters.
 
-when the AI review feels wrong, you need to see the evidence it was built from.
+The app keeps the captured events and derived timeline so the session can be retried, inspected through the CLI, and improved over time with review feedback.

@@ -2,10 +2,17 @@
 
 Legacy scaffold folder.
 
-Current storage is JSON in `LogbookCore`, not SQLite.
+Storage now lives inside `Sources/LogbookCore/SessionStore.swift`.
 
-Persisted files:
+Current runtime storage uses a local SQLite database under:
 
-- `events.json`
-- `session-reviews.json`
-- `capture-settings.json`
+- `~/Library/Application Support/Logbook/logbook.sqlite`
+
+The store persists:
+
+- raw events
+- saved sessions
+- generated reviews
+- capture settings
+- review feedback
+- review learning memory

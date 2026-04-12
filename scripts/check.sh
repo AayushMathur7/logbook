@@ -18,7 +18,10 @@ for path in "${required_files[@]}"; do
   fi
 done
 
-swift build
-swift run logbook-selftest
+export SWIFTPM_MODULECACHE_OVERRIDE="${PWD}/.build-local/clang-cache"
+export CLANG_MODULE_CACHE_PATH="${PWD}/.build-local/clang-cache"
+
+swift build --scratch-path "${PWD}/.build-local"
+swift run --scratch-path "${PWD}/.build-local" logbook-selftest
 
 echo "Scaffold and build check passed."

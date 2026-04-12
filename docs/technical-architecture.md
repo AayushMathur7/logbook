@@ -2,16 +2,16 @@
 
 ## Current Reality
 
-This branch does not have a daemon, SQLite, or a split app/agent runtime.
-
 The current architecture is:
 
 - `LogbookApp` captures signals in-process
-- `LogbookCore` holds shared models and logic
-- local JSON files store events, reviews, and settings
-- `codex` / `claude` CLIs generate session reviews on demand
+- `LogbookCore` holds shared models, privacy rules, timeline derivation, and storage
+- local SQLite stores events, sessions, reviews, settings, and review feedback
+- Ollama is the only review provider and is restricted to localhost
 
-## Targets
+There is no daemon process today. Capture starts and stops from the app itself.
+
+## Main Components
 
 ### `LogbookCore`
 
@@ -20,10 +20,12 @@ Shared code in `Sources/LogbookCore`.
 Responsibilities:
 
 - event schema
-- persistence helpers
+- capture settings
 - privacy filtering
 - sessionization
-- review models
+- timeline and attention derivation
+- session review models
+- SQLite persistence
 
 ### `LogbookApp`
 
@@ -31,19 +33,20 @@ SwiftUI macOS app in `Sources/LogbookApp`.
 
 Responsibilities:
 
-- UI
+- session-first UI
 - app-side capture
+- permission handling
 - session timer
-- provider selection
-- AI review generation
+- review generation
+- history and feedback flows
 
 ### `logbook`
 
-CLI for reading locally stored events and sessions.
+CLI for inspecting locally stored events and sessions.
 
 ### `logbook-selftest`
 
-Lightweight self-test runner for privacy filtering and sessionization behavior.
+Self-test runner for privacy filtering, timeline derivation, observability logic, and review feedback persistence.
 
 ## Capture Pipeline
 
@@ -94,54 +97,54 @@ The app imports those events on a timer.
 - rename
 - delete
 
-### Clipboard
+### Clipboard and presence
 
-Pasteboard changes are sampled and stored as a short preview.
+The app also captures:
+
+- short clipboard previews
+- user idle and resume events
 
 ## Persistence
 
-Files under Application Support:
+The runtime database lives at:
 
-- `events.json`
-- `session-reviews.json`
-- `capture-settings.json`
+- `~/Library/Application Support/Logbook/logbook.sqlite`
 
-The app writes whole JSON snapshots atomically.
+The store currently persists:
+
+- raw events
+- saved sessions
+- generated reviews
+- capture settings
+- review feedback
+- review learning memory
 
 ## Session Review Flow
 
 1. Collect all events between `startedAt` and `endedAt`.
-2. Build a structured evidence prompt.
-3. Send that prompt to the selected provider CLI.
-4. Parse the returned JSON into `SessionReview`.
-5. Enrich the review locally with:
-   - key moments fallback
-   - trace
-   - app durations
-   - switch count
-   - inferred repo
-   - nearby calendar title
-6. Persist the review if it came from a real timed session.
+2. Derive timeline segments and intent-aware observations.
+3. Build a structured prompt from the goal, events, timeline, and nearby calendar titles.
+4. Send the prompt to Ollama over localhost.
+5. Parse the result into a short review.
+6. Enrich the review locally with inline spans, dominant apps, session path, and attention segments.
+7. Persist the review if it came from a completed timed session.
 
-## Provider Integration
+## Privacy Model
 
-`AIProviderBridge` currently supports:
+Privacy filtering happens before persistence.
 
-- `codex exec`
-- `claude -p`
+Current controls include:
 
-Both integrations are CLI-based, not SDK-based.
-
-The app stores:
-
-- provider title
-- exact prompt
-- raw response
-- parsed review
+- excluded app bundle IDs
+- excluded browser domains
+- excluded path prefixes
+- redacted title bundle IDs
+- dropped shell-command directory prefixes
+- summary-only domains that keep only the domain and drop the full URL
 
 ## Known Architectural Debt
 
-- capture still runs on the app process
-- browser / Finder inspection uses synchronous AppleScript
-- AppModel still computes legacy focus / mode / pattern state even though the UI is now session-first
-- JSON persistence will become a bottleneck long before search or long-history use cases are solved
+- capture still runs in the app process instead of a separate background component
+- browser and Finder inspection still depend on synchronous AppleScript
+- `AppModel` owns a large amount of state and orchestration logic
+- first-run setup still depends on manual permissions, shell setup, and local model configuration

@@ -334,7 +334,7 @@ enum AIProviderBridge: LocalReviewProvider {
         bad output pattern
         </input>
         <output>
-        Bad: Aayush moved between work tools and media during preparation.
+        Bad: Jordan moved between work tools and media during preparation.
         Good: Work tools and media kept trading places.
         </output>
         </example>
@@ -365,12 +365,12 @@ enum AIProviderBridge: LocalReviewProvider {
         <example>
         <input>
         goal: deploy logbook to github
-        evidence: Codex, GitHub auth/session pages, AayushMathur7/logbook, YouTube Shorts
+        evidence: Codex, GitHub auth/session pages, acme/logbook, YouTube Shorts
         </input>
         <output>
         VERDICT: partially_matched
         HEADLINE: GitHub showed up, but YouTube won.
-        RECAP: You reached GitHub and `AayushMathur7/logbook`, but YouTube still took more of the block than the deployment path did.
+        RECAP: You reached GitHub and `acme/logbook`, but YouTube still took more of the block than the deployment path did.
         TAKEAWAY: You did touch the task, but it never became the **main thread**.
         </output>
         </example>
