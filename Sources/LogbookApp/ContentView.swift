@@ -415,12 +415,23 @@ struct ContentView: View {
                 .font(.system(size: 24, weight: .semibold, design: .serif))
                 .fixedSize(horizontal: false, vertical: true)
 
-            RichReviewText(
-                spans: review.summarySpans,
-                fallbackMarkdown: review.summary,
-                font: .system(size: 13),
-                color: LogbookStyle.subtleText
-            )
+            VStack(alignment: .leading, spacing: 12) {
+                RichReviewText(
+                    spans: review.summarySpans,
+                    fallbackMarkdown: review.summary,
+                    font: .system(size: 13),
+                    color: LogbookStyle.subtleText,
+                    entityStyle: .inlineChip
+                )
+
+                if let takeaway = review.focusAssessment?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !takeaway.isEmpty {
+                    Text(takeaway)
+                        .font(.system(size: 13))
+                        .foregroundStyle(LogbookStyle.subtleText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
         .padding(.horizontal, 12)
     }
@@ -555,14 +566,15 @@ struct ContentView: View {
 
         VStack(alignment: .leading, spacing: 10) {
             Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
                     showLiveActivity.toggle()
                 }
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: showLiveActivity ? "chevron.down" : "chevron.right")
+                    Image(systemName: "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(LogbookStyle.subtleText)
+                        .rotationEffect(.degrees(showLiveActivity ? 90 : 0))
                     Text("Activity being captured")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(LogbookStyle.text)
@@ -571,27 +583,40 @@ struct ContentView: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(LogbookStyle.subtleText)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .animation(.spring(response: 0.28, dampingFraction: 0.82), value: showLiveActivity)
 
             if showLiveActivity {
                 if events.isEmpty {
                     Text("No live activity captured yet.")
                         .font(.system(size: 12))
                         .foregroundStyle(LogbookStyle.subtleText)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(events) { event in
                                 liveActivityRow(event)
+                                    .transition(
+                                        .asymmetric(
+                                            insertion: .move(edge: .top).combined(with: .opacity),
+                                            removal: .opacity
+                                        )
+                                    )
                             }
                         }
                     }
                     .frame(maxHeight: 168)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
         }
         .padding(.top, 4)
+        .animation(.spring(response: 0.3, dampingFraction: 0.84), value: showLiveActivity)
+        .animation(.spring(response: 0.3, dampingFraction: 0.84), value: events.map(\.id))
     }
 
     private func liveActivityRow(_ event: ActivityEvent) -> some View {
@@ -620,10 +645,12 @@ struct ContentView: View {
     }
 
     private func liveSessionEvents(for session: FocusSession) -> [ActivityEvent] {
-        model.allEvents
+        Array(
+            model.allEvents
             .filter { $0.occurredAt >= session.startedAt && $0.occurredAt <= Date() }
             .suffix(18)
-            .map { $0 }
+            .reversed()
+        )
     }
 
     private func liveEventTitle(for event: ActivityEvent) -> String {

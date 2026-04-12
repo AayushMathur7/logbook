@@ -166,6 +166,8 @@ enum SourceBadgeFactory {
             return SourceBadgeModel(label: "X", icon: .brandAsset("x"))
         case "spotify":
             return SourceBadgeModel(label: "Spotify", icon: .brandAsset("spotify"))
+        case "whatsapp":
+            return SourceBadgeModel(label: "WhatsApp", icon: .app(bundleID: "net.whatsapp.WhatsApp"))
         case "notion calendar":
             return SourceBadgeModel(label: "Notion Calendar", icon: .brandAsset("notion"))
         case "notion":
@@ -219,6 +221,9 @@ enum SourceBadgeFactory {
         if lowered.contains("spotify") {
             return SourceBadgeModel(label: trimmed, icon: .brandAsset("spotify"))
         }
+        if lowered.contains("whatsapp") {
+            return SourceBadgeModel(label: trimmed, icon: .app(bundleID: "net.whatsapp.WhatsApp"))
+        }
         if lowered.contains("chrome") {
             return SourceBadgeModel(label: trimmed, icon: .brandAsset("chrome"))
         }
@@ -227,6 +232,9 @@ enum SourceBadgeFactory {
         }
         if lowered.contains("codex") {
             return SourceBadgeModel(label: trimmed, icon: .brandAsset("openai"))
+        }
+        if lowered.contains("log book") || lowered.contains("logbook") {
+            return SourceBadgeModel(label: trimmed, icon: .system("book.closed.fill"))
         }
         if let badge = fileBadge(for: trimmed) {
             return badge
@@ -261,7 +269,7 @@ enum BrandLogoRegistry {
     }
 }
 
-private final class AppIconCache {
+final class AppIconCache {
     static let shared = AppIconCache()
 
     private var cache: [String: NSImage] = [:]

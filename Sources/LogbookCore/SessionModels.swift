@@ -642,17 +642,20 @@ public struct SessionReviewInlineSpan: Hashable, Codable {
     public let text: String
     public let entityKind: String?
     public let referenceID: String?
+    public let url: String?
 
     public init(
         kind: Kind,
         text: String,
         entityKind: String? = nil,
-        referenceID: String? = nil
+        referenceID: String? = nil,
+        url: String? = nil
     ) {
         self.kind = kind
         self.text = text
         self.entityKind = entityKind
         self.referenceID = referenceID
+        self.url = url
     }
 }
 

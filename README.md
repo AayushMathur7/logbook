@@ -1,59 +1,72 @@
 # Log Book
 
-Log Book is a local-first macOS app for running intentional sessions and getting a review of what actually happened on your machine during that block.
+Log Book is a local-only macOS app for reviewing what actually happened during a focused session.
+
+You write what you want to focus on, start a timer, let the app capture lightweight local evidence during the block, and then read a short review of how the session actually went.
+
+The product is not an always-on memory app and it is not a blocker like SelfControl. The point is not to stop you from drifting. The point is to show you, clearly and locally, what the session turned into.
+
+## What The App Does
 
 The app is built around one loop:
 
-1. Write what you want to do.
-2. Start a timed session.
-3. Let Log Book capture local evidence during the block.
-4. End the session or let the timer finish.
-5. Read a short review of what happened and whether the session matched the stated intent.
+1. Write what you are focusing on.
+2. Pick a session length.
+3. Start the session.
+4. Let Log Book capture local evidence during the block.
+5. End the block or let the timer finish.
+6. Read a short review and save it to history.
 
-## Current Product Shape
+Current UX:
 
-Log Book is not an always-on memory product and it is not a passive life log.
+- `Session` is the main surface for setup, running, generating, and the latest review.
+- `History` lets you reopen past sessions and retry their reviews.
+- `Settings` controls capture sources and Ollama configuration.
 
-The app is session-bounded:
+The review is intentionally short. It is meant to read like a one-screen recap, not a dashboard.
 
-- `Session` for starting a block, running it, generating the review, and reading the latest review
-- `History` for reviewing saved sessions again
-- `Settings` for capture toggles and local model configuration
+## Product Shape
 
-The review logic is now intent-aware. That means surfaces like `YouTube`, `X`, `Spotify`, or `GitHub` are not treated as inherently good or bad. They are judged relative to what you said you wanted to do in that session.
+Log Book judges a session against the intent you typed, not against a hardcoded idea of productivity.
 
 Examples:
 
-- `watch YouTube` can count as a matched session if the block mostly stayed on YouTube
-- `deploy logbook to GitHub` can count GitHub, coding tools, and repo context as aligned or adjacent
-- `scroll X` can be valid if that was explicitly the stated intent
+- `I wanna just watch YouTube` can be a matched session if the block mostly stayed on YouTube.
+- `deploy logbook to github` can count GitHub, coding tools, and repo context as aligned work.
+- `help me get my day ready` is treated as broader and fuzzier, so the review should describe the block honestly rather than pretending it knows more than the evidence shows.
 
-## Architecture
+The review UI currently supports:
 
-The repo currently ships:
-
-- a SwiftUI macOS app in `Sources/LogbookApp`
-- a shared core library in `Sources/LogbookCore`
-- a small CLI in `Sources/logbook`
-- a self-test runner in `Sources/logbookselftest`
+- a one-line headline for the session
+- a short recap in plain language
+- a short takeaway line
+- inline app/site/repo badges
+- clickable inline links when the session captured a real URL for that mention
+- stored history for past sessions
 
 ## Capture Model
 
-Log Book captures lightweight local signals during a session.
+Log Book captures lightweight local signals during a session window.
 
 Current capture includes:
 
-- frontmost app activation, launch, and termination
+- frontmost app changes, launches, and terminations
 - wake and sleep
-- focused window title changes when Accessibility is granted
-- browser tab titles, URLs, and domains for supported browsers
+- active window titles when Accessibility is granted
+- browser page titles, URLs, and domains for supported browsers
 - Finder context when available
 - shell commands imported from `integrations/shell/logbook.zsh`
 - file activity under watched roots
 - clipboard changes with a short preview
-- calendar context when access is granted
+- nearby calendar context when Calendar access is granted
 
-The app does not capture screenshots, audio, OCR, camera, microphone, or keystrokes.
+The app does not capture:
+
+- screenshots
+- OCR
+- audio recordings
+- camera or microphone
+- keystrokes
 
 ## Storage
 
@@ -63,77 +76,106 @@ Runtime storage is SQLite under:
 ~/Library/Application Support/Logbook/logbook.sqlite
 ```
 
-Saved data includes:
+Stored data includes:
 
-- raw events
+- raw captured events
 - sessions
-- derived session segments
-- generated reviews
-- capture settings
+- derived timeline segments
+- saved reviews
+- capture and Ollama settings
+
+Raw events are pruned by retention settings. Session history and reviews stay until deleted.
 
 ## Local Review Generation
 
-Log Book currently uses `Ollama` for local review generation.
+Log Book currently uses Ollama only.
 
 Important constraints:
 
 - localhost only
-- no cloud model fallback
-- no remote API hosts
-- reviews still work with a local fallback summary if Ollama is not configured or its response cannot be parsed
+- no cloud fallback
+- no remote model hosts
+- no hidden network calls beyond your configured local Ollama instance
 
-The current default base URL is:
+Default base URL:
 
 ```text
 http://127.0.0.1:11434
 ```
 
-## Running the App
+If Ollama is not configured or fails, the app still saves the session and can fall back to a local non-LLM review.
+
+## Architecture
+
+This repo currently contains:
+
+- `Sources/LogbookApp` — the SwiftUI macOS app
+- `Sources/LogbookCore` — shared models, SQLite store, and timeline derivation
+- `Sources/logbook` — a small CLI for inspecting stored data
+- `Sources/logbookselftest` — a self-test runner
+
+Core files:
+
+- [Sources/LogbookApp/ContentView.swift](/Users/aayush/ai-projects/logbook/Sources/LogbookApp/ContentView.swift) — main app surface and state-driven UI
+- [Sources/LogbookApp/AppModel.swift](/Users/aayush/ai-projects/logbook/Sources/LogbookApp/AppModel.swift) — session lifecycle, capture orchestration, history selection, and review persistence
+- [Sources/LogbookApp/AIProviderBridge.swift](/Users/aayush/ai-projects/logbook/Sources/LogbookApp/AIProviderBridge.swift) — Ollama prompt construction and review parsing
+- [Sources/LogbookApp/UI/MarkdownText.swift](/Users/aayush/ai-projects/logbook/Sources/LogbookApp/UI/MarkdownText.swift) — inline review rendering, badges, emphasis, and inline links
+- [Sources/LogbookCore/TimelineDeriver.swift](/Users/aayush/ai-projects/logbook/Sources/LogbookCore/TimelineDeriver.swift) — timeline enrichment and intent-aware interpretation
+- [Sources/LogbookCore/SessionStore.swift](/Users/aayush/ai-projects/logbook/Sources/LogbookCore/SessionStore.swift) — SQLite persistence
+
+## Running The App
 
 From the repo root:
 
 ```bash
 cd /Users/aayush/ai-projects/logbook
-swift build
-./.build/debug/LogbookApp
+SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build-local/clang-cache CLANG_MODULE_CACHE_PATH=$PWD/.build-local/clang-cache swift run --scratch-path $PWD/.build-local LogbookApp
 ```
 
-If an older process is still running, quit it first or kill it before relaunching:
+If you prefer to build first:
 
 ```bash
-pkill -f LogbookApp || true
 cd /Users/aayush/ai-projects/logbook
-swift build
-./.build/debug/LogbookApp
+SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build-local/clang-cache CLANG_MODULE_CACHE_PATH=$PWD/.build-local/clang-cache swift build --scratch-path $PWD/.build-local
+./.build-local/debug/LogbookApp
 ```
 
-Running the built binary directly is currently more reliable than `swift run LogbookApp` on this machine.
+If another instance is already running:
+
+```bash
+pkill -f LogbookApp
+```
+
+Then relaunch with one of the commands above.
 
 ## Validation
 
 Build:
 
 ```bash
-swift build
+cd /Users/aayush/ai-projects/logbook
+SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build-local/clang-cache CLANG_MODULE_CACHE_PATH=$PWD/.build-local/clang-cache swift build --scratch-path $PWD/.build-local
 ```
 
-Run the self-test suite:
+Run self-tests:
 
 ```bash
-swift run logbook-selftest
+cd /Users/aayush/ai-projects/logbook
+SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build-local/clang-cache CLANG_MODULE_CACHE_PATH=$PWD/.build-local/clang-cache swift run --scratch-path $PWD/.build-local logbook-selftest
 ```
 
 Useful CLI commands:
 
 ```bash
-swift run logbook view
-swift run logbook view --events --limit 20
-swift run logbook view --summary
+cd /Users/aayush/ai-projects/logbook
+SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build-local/clang-cache CLANG_MODULE_CACHE_PATH=$PWD/.build-local/clang-cache swift run --scratch-path $PWD/.build-local logbook view
+SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build-local/clang-cache CLANG_MODULE_CACHE_PATH=$PWD/.build-local/clang-cache swift run --scratch-path $PWD/.build-local logbook view --events --limit 20
+SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build-local/clang-cache CLANG_MODULE_CACHE_PATH=$PWD/.build-local/clang-cache swift run --scratch-path $PWD/.build-local logbook view --summary
 ```
 
 ## Shell Hook
 
-If you want exact terminal commands to show up in captured evidence, add this to `~/.zshrc`:
+If you want terminal commands to show up in captured evidence, add this to `~/.zshrc`:
 
 ```zsh
 source /Users/aayush/ai-projects/logbook/integrations/shell/logbook.zsh
@@ -149,13 +191,11 @@ The app is designed to stay local:
 - storage stays on-device
 - review generation stays local through Ollama
 
-Privacy filtering and exclusions are configured in `Settings`.
+Exclusions and redactions are configured in `Settings`.
 
-## Key Files
+## Current Limitations
 
-- `Sources/LogbookApp/ContentView.swift` — main app surface and layout
-- `Sources/LogbookApp/AppModel.swift` — session lifecycle, persistence wiring, review orchestration
-- `Sources/LogbookApp/AIProviderBridge.swift` — Ollama integration and review prompt construction
-- `Sources/LogbookCore/TimelineDeriver.swift` — evidence segmentation and intent-aware alignment
-- `Sources/LogbookCore/SessionStore.swift` — SQLite persistence
-- `Sources/logbookselftest/main.swift` — self-test coverage
+- The review quality still depends on the captured evidence and prompt quality.
+- Old saved reviews may not have newer inline features like clickable links until they are retried.
+- App and browser context is best-effort and depends on macOS permissions.
+- Some surfaces, especially broad goals, still need prompt tuning to produce cleaner summaries.

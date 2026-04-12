@@ -74,7 +74,6 @@ enum AIProviderBridge: LocalReviewProvider {
             OllamaGenerateRequest(
                 model: configuration.modelName,
                 prompt: prompt,
-                format: "json",
                 stream: false
             )
         )
@@ -116,33 +115,14 @@ enum AIProviderBridge: LocalReviewProvider {
         endedAt: Date,
         segments: [TimelineSegment]
     ) throws -> SessionReview {
-        let jsonString = extractJSONObject(from: output)
-        let payload = try decodeLocalSessionReviewPayload(from: jsonString)
+        let payload = parsePlainTextReviewPayload(from: output)
         let normalizedHeadline = sanitizedReviewHeadline(
             normalizedReviewText(payload.headline, personName: personName),
             goal: title
         ).trimmedOrFallback("Session review ready.")
-        let normalizedSummary = normalizedReviewText(payload.summary, personName: personName).trimmedOrFallback("The session completed with local evidence only.")
-        let parsedSummarySpans = normalizedRichSpans(payload.summarySpans)
-        let normalizedSummarySpans = parsedSummarySpans.isEmpty
-            ? inferredRichSpans(from: normalizedSummary, goal: title)
-            : parsedSummarySpans
-        let normalizedInterruptions = payload.interruptions
-            .map { normalizedReviewText($0, personName: personName) }
-            .cleaned(limit: 3)
-        let parsedInterruptionSpans = payload.interruptionSpans
-            .prefix(3)
-            .map(normalizedRichSpans)
-        let normalizedInterruptionSpans = Array(normalizedInterruptions.enumerated()).map { index, interruption in
-            if parsedInterruptionSpans.indices.contains(index), !parsedInterruptionSpans[index].isEmpty {
-                return parsedInterruptionSpans[index]
-            }
-            return inferredRichSpans(from: interruption, goal: title)
-        }
-        let normalizedFocusAssessment = payload.focusAssessment.map { normalizedReviewText($0, personName: personName) }?.nilIfBlank
-        let normalizedConfidenceNotes = payload.confidenceNotes
-            .map { normalizedReviewText($0, personName: personName) }
-            .cleaned(limit: 4)
+        let normalizedRecap = normalizedReviewText(payload.recap, personName: personName).trimmedOrFallback("The session completed with local evidence only.")
+        let normalizedSummarySpans = inferredRichSpans(from: normalizedRecap, goal: title, segments: segments)
+        let normalizedTakeaway = normalizedReviewText(payload.takeaway, personName: personName).trimmedOrFallback("The outcome stayed unclear.")
         return SessionReview(
             sessionTitle: title,
             startedAt: startedAt,
@@ -151,12 +131,12 @@ enum AIProviderBridge: LocalReviewProvider {
             quality: payload.verdict == .matched ? .coherent : (payload.verdict == .missed ? .drifted : .mixed),
             goalMatch: payload.verdict == .matched ? .strong : (payload.verdict == .missed ? .weak : .partial),
             headline: normalizedHeadline,
-            summary: normalizedSummary,
+            summary: normalizedRecap,
             summarySpans: normalizedSummarySpans,
-            why: normalizedSummary,
-            interruptions: normalizedInterruptions,
-            interruptionSpans: normalizedInterruptionSpans,
-            reasons: normalizedConfidenceNotes.nonEmpty ?? [normalizedSummary],
+            why: normalizedRecap,
+            interruptions: [],
+            interruptionSpans: [],
+            reasons: [normalizedTakeaway],
             timeline: Array(segments.prefix(6)).map {
                 SessionTimelineEntry(
                     at: ActivityFormatting.shortTime.string(from: $0.startAt),
@@ -175,12 +155,12 @@ enum AIProviderBridge: LocalReviewProvider {
             clipboardPreview: nil,
             dominantApps: Array(segments.map(\.appName).orderedUnique().prefix(4)),
             sessionPath: Array(segments.map(\.primaryLabel).orderedUnique().prefix(4)),
-            breakPointAtLabel: payload.keyMoments.first?.at,
-            breakPoint: payload.interruptions.first,
-            dominantThread: normalizedFocusAssessment,
-            referenceURL: payload.keyMoments.compactMap(\.url).first,
-            focusAssessment: normalizedFocusAssessment,
-            confidenceNotes: normalizedConfidenceNotes,
+            breakPointAtLabel: nil,
+            breakPoint: nil,
+            dominantThread: nil,
+            referenceURL: nil,
+            focusAssessment: normalizedTakeaway,
+            confidenceNotes: [],
             segments: segments,
             attentionSegments: AttentionDeriver.derive(from: segments)
         )
@@ -198,10 +178,13 @@ enum AIProviderBridge: LocalReviewProvider {
         let intent = TimelineDeriver.deriveIntent(from: title)
         let observedSegments = TimelineDeriver.observeSegments(segments, goal: title)
         let observability = TimelineDeriver.summarizeObservedSegments(observedSegments)
+        let goalSpecificity = goalSpecificityLabel(for: title, intent: intent)
         let directEntities = dominantObservedEntityLabels(from: observedSegments, role: .direct)
         let supportEntities = dominantObservedEntityLabels(from: observedSegments, role: .support)
         let driftEntities = dominantObservedEntityLabels(from: observedSegments, role: .drift)
         let breakEntities = dominantObservedEntityLabels(from: observedSegments, role: .breakTime)
+        let allowedMentions = allowedEvidenceMentions(from: segments, events: events, calendarTitles: calendarTitles)
+        let factPack = sessionPromptFactPack(from: segments)
         let evidence = SessionEvidenceSummary(
             topApps: topCounts(events.compactMap(\.appName), limit: 6),
             topTitles: topCounts((events.compactMap(\.windowTitle) + events.compactMap(\.resourceTitle)), limit: 8),
@@ -233,136 +216,263 @@ enum AIProviderBridge: LocalReviewProvider {
         }.joined(separator: "\n")
 
         return """
-        You are reviewing a completed session from local desktop evidence.
-        Write like a sharp, calm friend describing what happened in one short recap.
+        <role>
+        You are writing a short, useful session recap from local desktop evidence.
+        Write like a perceptive friend who watched the block and is telling the person what actually happened.
         The person's first name is \(personName?.nilIfBlank ?? "unknown").
+        </role>
 
-        Return valid JSON only with exactly this schema:
-        {"headline":"...","verdict":"matched|partially_matched|missed","summary":"...","summary_spans":[{"type":"text|entity|title|goal|code|file","text":"...","entity_kind":"app|site|repo|file","ref":"optional-id"}],"interruptions":["..."],"interruptions_spans":[[{"type":"text|entity|title|goal|code|file","text":"...","entity_kind":"app|site|repo|file","ref":"optional-id"}]],"key_moments":[{"at":"h:mm a","text":"...","url":"https://..."}],"focus_assessment":"...","confidence_notes":["..."]}
+        <output_contract>
+        Return exactly four lines:
+        VERDICT: matched|partially_matched|missed
+        HEADLINE: ...
+        RECAP: ...
+        TAKEAWAY: ...
+        </output_contract>
 
-        Rules:
-        - headline under 18 words
-        - summary under 45 words
-        - be concrete and evidence-based
-        - evaluate the session relative to the stated intent, not against a universal definition of productivity
-        - speak directly to the person who did the session using second person
-        - never say "the user", "user", or "they" when describing the session
-        - default to "you"; do not narrate the person in third person and do not write phrases like "Aayush's session" or "their session"
-        - you may use the person's first name at most once, and only as direct address like "Aayush, ..."
-        - prefer the timeline over isolated raw events
-        - the main question is: did this block materially help the stated goal or not
-        - if the stated goal itself was to watch, browse, listen, or otherwise consume something, matching behavior can count as progress
-        - YouTube, X, Spotify, GitHub, or any other surface are not inherently good or bad; judge them only relative to the stated intent
-        - optimize for usefulness to the person reviewing the session, not for completeness
-        - mention only evidence that helped the goal, hurt the goal, or changed the outcome
-        - ignore neutral background context unless it clearly changed the session
-        - treat aligned activity as the main thread of the goal, adjacent activity as nearby but indirect, off-path activity as detours, and breaks as intentional pauses
-        - if adjacent activity dominated while aligned activity stayed low, say the block stayed near the goal but did not move it much
-        - say plainly when the goal was displaced
-        - never summarize behavior at the browser-shell level if a clearer viewed entity is known
-        - avoid phrases like "in Google Chrome", "in Safari", or "exploring tabs" when you can name what was actually viewed
-        - prefer "YouTube", "GitHub", "Notion Calendar", "Spotify", a repo, a file, or a specific page/title over the browser app name
-        - confidence_notes should call out uncertainty only when needed
-        - interruptions should be 0 to 3 items
-        - interruptions should only include things that actually pulled the session away from the goal
-        - do not include neutral tools or harmless context as interruptions
-        - key_moments should be 3 to 6 factual anchors using session clock time
-        - summary_spans and interruptions_spans must mirror the meaning of summary/interruptions
-        - the writing should read naturally as prose first, not like a list of chips
-        - use entity spans only for the most important apps, sites, repos, or files
-        - use at most 2 entity spans in summary_spans unless a third is essential
-        - do not repeat the same entity span more than once in the summary
-        - when using entity spans, prefer these exact labels when they fit the evidence: YouTube, GitHub, Notion Calendar, Notion, Spotify, Safari, Chrome, X, Cursor, Codex, Google Docs, Google Drive
-        - do not turn long page, video, or song titles into entity spans
-        - use title spans for content titles like videos, pages, or songs
-        - use title spans sparingly, usually 0 to 1 in the summary
-        - use goal spans when directly naming the session goal
-        - plain connective prose should remain text spans
-        - if a service is obvious from context, mention it in plain text instead of another entity span
-        - avoid badge spam such as YouTube, YouTube, YouTube repeated in one paragraph
-        - prefer one good sentence over several fragmented clauses
-        - summary should usually be a single sentence
-        - long titles should be shortened to the most recognizable fragment
-        - if an interruption bullet repeats the summary exactly, omit it
-        - if the same service appears multiple times, collapse it into one mention and describe what pulled the block away
-        - headline must be a judgment about goal progress, not a timestamp, not a session title, and not an app list
-        - do not include clock times, date ranges, or colons in the headline
-        - good headline examples: "You stayed near the work, but drift took over." / "You made progress on the UI, but not much." / "This block did not help the goal."
-        - bad headline examples: "3:44 PM - 3:54 PM: YouTube Break instead of Logbook UI Work" / "YouTube, GitHub, Notion Calendar"
-        - summary should answer three things in plain language: what helped, what got in the way, and whether the goal moved forward
-        - if the goal barely moved, say that directly
-        - for watch, listen, or browse goals, avoid phrases like "limited progress", "didn't move the goal forward", or "stated goal"; say whether the session matched the intent and mention detours plainly
-        - when one specific video, song, page, repo, or file clearly dominated the block, mention it in the summary
-        - never emit HTML or XML tags
+        <style_rules>
+        - Use second person only.
+        - Never say "the user", "they", or "\(personName?.nilIfBlank ?? "the person's") session".
+        - Never use the person's name anywhere in the output.
+        - Do not start the headline with "you,".
+        - Do not start the headline with "This block", "During this session", or "You spent".
+        - Do not use colons in the headline.
+        - The headline should read like a short review title for this exact session, not a generic template.
+        - The headline should name the dominant outcome, thread, or failure mode of the session.
+        - Headline under 12 words.
+        - RECAP under 48 words.
+        - TAKEAWAY under 20 words.
+        - Write at about an eighth-grade reading level.
+        - Use short, plain sentences.
+        - Every sentence should teach the reader something concrete.
+        - Sound direct, specific, and human.
+        - Do not use internal scoring language or classifier words.
+        - Do not quote the goal text back unless it is essential.
+        - Do not emit markdown, HTML, XML, bullets, or extra commentary.
+        - Never mention any app, site, repo, file, video, song, page, or person unless it appears in the allowed mentions or raw evidence below.
+        - You may use light markdown emphasis when helpful:
+          - *italics* for titles like songs, videos, or page names
+          - **bold** for a key point
+          - `code` for repo names, file names, or paths
+        - Use emphasis sparingly.
+        </style_rules>
 
-        Good style example:
-        summary: "You opened YouTube and watched sidemen clips instead of moving make me money forward."
-        summary_spans: [
-          {"type":"text","text":"You opened "},
-          {"type":"entity","text":"YouTube","entity_kind":"site","ref":"youtube"},
-          {"type":"text","text":" and watched "},
-          {"type":"title","text":"sidemen clips"},
-          {"type":"text","text":" instead of moving "},
-          {"type":"goal","text":"make me money"},
-          {"type":"text","text":" forward."}
-        ]
+        <decision_rules>
+        - Judge the block against the person's own intent, not generic productivity.
+        - If the goal was to watch, browse, listen, or consume something, then doing that can count as matched.
+        - If the goal was broad or fuzzy, do not pretend you know the real outcome. Say the outcome is unclear when needed.
+        - For broad goals, prefer describing the dominant threads of the block over claiming success or failure.
+        - Prefer what was actually viewed or worked on over the browser or app shell.
+        - If a concrete title, repo, file, or page clearly mattered, mention it.
+        - If the session bounced between tools without a clear artifact, say that plainly.
+        - Name only things present in the evidence.
+        - Avoid repeating the same app or site name multiple times.
+        - Before answering, check that every concrete noun you mention is present in the evidence.
+        - If music or media was visible, say what it was and about how long it stayed visible.
+        - If a site or page was visible, say what it was and about how long it took.
+        - If something only appeared briefly, call it brief.
+        </decision_rules>
 
-        Bad style example:
-        summary: "You opened YouTube and watched sidemen on YouTube and then another YouTube video on YouTube."
+        <examples>
+        <example>
+        <input>
+        goal: Help me get my day ready
+        evidence: Codex, Spotify, WhatsApp, Log Book
+        </input>
+        <output>
+        VERDICT: partially_matched
+        HEADLINE: Setup time got split with music.
+        RECAP: You spent about **2 minutes** in Codex, under a minute in Log Book, and almost **2 minutes** with Spotify visible, mostly on *BTS - 2.0*. WhatsApp interrupted the block briefly near the end.
+        TAKEAWAY: You stayed near your setup tools, but the session never settled into a **clear day-prep run**.
+        </output>
+        </example>
 
-        Bad browser-shell example:
-        summary: "You spent most of the session in Google Chrome, exploring tabs."
+        <example>
+        <input>
+        bad output pattern
+        </input>
+        <output>
+        Bad: Aayush moved between work tools and media during preparation.
+        Good: Work tools and media kept trading places.
+        </output>
+        </example>
 
-        Better browser-entity example:
-        summary: "You stayed around the logbook repo at first, then drifted into YouTube while Spotify stayed active in the background."
+        <example>
+        <input>
+        allowed mentions: Codex, Log Book, Spotify, WhatsApp
+        </input>
+        <output>
+        Bad: YouTube took over the block.
+        Good: You moved between Codex, Log Book, Spotify, and WhatsApp.
+        </output>
+        </example>
 
-        Better usefulness example:
-        headline: "This block stayed near the goal, but didn’t move it much."
-        summary: "You spent some of the block around Logbook UI work, but YouTube and short breaks absorbed enough time that the goal barely moved forward."
-        interruptions: ["YouTube pulled a noticeable share of the block away from the UI work."]
+        <example>
+        <input>
+        goal: I wanna just watch YouTube
+        evidence: YouTube watch page, one short X detour
+        </input>
+        <output>
+        VERDICT: matched
+        HEADLINE: YouTube stayed front and center.
+        RECAP: You spent most of the block on YouTube and only dipped into X briefly.
+        TAKEAWAY: The session **matched the goal**, with only a small detour.
+        </output>
+        </example>
 
-        Intent-sensitive example:
-        Session goal: I wanna just watch YouTube
-        If the session mostly stayed on one YouTube watch page with only a short detour elsewhere, that should be matched or partially matched, not missed.
+        <example>
+        <input>
+        goal: deploy logbook to github
+        evidence: Codex, GitHub auth/session pages, AayushMathur7/logbook, YouTube Shorts
+        </input>
+        <output>
+        VERDICT: partially_matched
+        HEADLINE: GitHub showed up, but YouTube won.
+        RECAP: You reached GitHub and `AayushMathur7/logbook`, but YouTube still took more of the block than the deployment path did.
+        TAKEAWAY: You did touch the task, but it never became the **main thread**.
+        </output>
+        </example>
+        </examples>
 
-        Session goal: \(title)
-        Session time: \(ActivityFormatting.shortTime.string(from: startedAt)) to \(ActivityFormatting.shortTime.string(from: endedAt))
-        Derived intent:
-        - mode: \(intent.mode.rawValue)
-        - action: \(intent.action ?? "unknown")
-        - targets: \(intent.targets.joined(separator: " | ").nilIfBlank ?? "none")
-        - objects: \(intent.objects.joined(separator: " | ").nilIfBlank ?? "none")
-        - confidence: \(String(format: "%.2f", intent.confidence))
+        <session>
+        <goal>\(title)</goal>
+        <time>\(ActivityFormatting.shortTime.string(from: startedAt)) to \(ActivityFormatting.shortTime.string(from: endedAt))</time>
+        <goal_specificity>\(goalSpecificity)</goal_specificity>
+        <intent>
+        mode: \(intent.mode.rawValue)
+        action: \(intent.action ?? "unknown")
+        targets: \(intent.targets.joined(separator: " | ").nilIfBlank ?? "none")
+        objects: \(intent.objects.joined(separator: " | ").nilIfBlank ?? "none")
+        confidence: \(String(format: "%.2f", intent.confidence))
+        </intent>
 
-        Derived session summary:
-        - aligned activity: \(shortDurationLabel(for: observability.directSeconds))
-        - adjacent activity: \(shortDurationLabel(for: observability.supportSeconds))
-        - off-path activity: \(shortDurationLabel(for: observability.driftSeconds))
-        - breaks: \(shortDurationLabel(for: observability.breakSeconds))
-        - longest aligned run: \(shortDurationLabel(for: observability.longestDirectRunSeconds))
-        - off-path interruptions: \(observability.driftInterruptions)
-        - estimated goal progress: \(observability.goalProgressEstimate.rawValue)
-        - dominant aligned entities: \(directEntities.joined(separator: " | ").nilIfBlank ?? "none")
-        - dominant adjacent entities: \(supportEntities.joined(separator: " | ").nilIfBlank ?? "none")
-        - dominant off-path entities: \(driftEntities.joined(separator: " | ").nilIfBlank ?? "none")
-        - dominant break entities: \(breakEntities.joined(separator: " | ").nilIfBlank ?? "none")
+        <derived_facts>
+        goal_related_time: \(shortDurationLabel(for: observability.directSeconds))
+        nearby_time: \(shortDurationLabel(for: observability.supportSeconds))
+        detour_time: \(shortDurationLabel(for: observability.driftSeconds))
+        break_time: \(shortDurationLabel(for: observability.breakSeconds))
+        longest_goal_related_run: \(shortDurationLabel(for: observability.longestDirectRunSeconds))
+        detour_interruptions: \(observability.driftInterruptions)
+        dominant_goal_related_entities: \(directEntities.joined(separator: " | ").nilIfBlank ?? "none")
+        dominant_nearby_entities: \(supportEntities.joined(separator: " | ").nilIfBlank ?? "none")
+        dominant_detours: \(driftEntities.joined(separator: " | ").nilIfBlank ?? "none")
+        dominant_break_context: \(breakEntities.joined(separator: " | ").nilIfBlank ?? "none")
+        frontmost_breakdown:
+        \(factPack.frontmostBreakdown.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+        visible_media:
+        \(factPack.visibleMedia.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+        visible_sites:
+        \(factPack.visibleSites.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+        brief_interruptions:
+        \(factPack.briefInterruptions.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+        likely_background_context:
+        \(factPack.backgroundContext.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+        </derived_facts>
 
-        Timeline:
+        <raw_timeline>
         \(segmentLines.isEmpty ? "- none" : segmentLines)
+        </raw_timeline>
 
-        Observed roles:
+        <raw_observations>
         \(observedLines.isEmpty ? "- none" : observedLines)
+        </raw_observations>
 
-        Top apps: \(evidence.topApps.joined(separator: ", ").nilIfBlank ?? "none")
-        Top titles: \(evidence.topTitles.joined(separator: " | ").nilIfBlank ?? "none")
-        Top URLs/domains: \(evidence.topURLs.joined(separator: " | ").nilIfBlank ?? "none")
-        Top paths: \(evidence.topPaths.joined(separator: " | ").nilIfBlank ?? "none")
-        Commands: \(evidence.commands.joined(separator: " | ").nilIfBlank ?? "none")
-        Clipboard: \(evidence.clipboardPreviews.joined(separator: " | ").nilIfBlank ?? "none")
-        Quick notes: \(evidence.quickNotes.joined(separator: " | ").nilIfBlank ?? "none")
-        Calendar: \(calendarTitles.joined(separator: " | ").nilIfBlank ?? "none")
+        <allowed_mentions>
+        \(allowedMentions.isEmpty ? "- none" : allowedMentions.map { "- \($0)" }.joined(separator: "\n"))
+        </allowed_mentions>
+
+        <raw_evidence>
+        apps: \(evidence.topApps.joined(separator: ", ").nilIfBlank ?? "none")
+        titles: \(evidence.topTitles.joined(separator: " | ").nilIfBlank ?? "none")
+        urls_or_domains: \(evidence.topURLs.joined(separator: " | ").nilIfBlank ?? "none")
+        paths: \(evidence.topPaths.joined(separator: " | ").nilIfBlank ?? "none")
+        commands: \(evidence.commands.joined(separator: " | ").nilIfBlank ?? "none")
+        clipboard: \(evidence.clipboardPreviews.joined(separator: " | ").nilIfBlank ?? "none")
+        quick_notes: \(evidence.quickNotes.joined(separator: " | ").nilIfBlank ?? "none")
+        calendar: \(calendarTitles.joined(separator: " | ").nilIfBlank ?? "none")
+        </raw_evidence>
+        </session>
+
+        <task>
+        Write the four required lines using both the derived facts and the raw evidence.
+        The derived facts are guidance, not a script. Use the raw evidence to decide what actually mattered.
+        HEADLINE should feel like the one-line title of the session review card.
+        HEADLINE should be specific enough that someone could tell this session apart from another one.
+        RECAP should explain what happened with concrete things and rough durations.
+        TAKEAWAY should be one plain sentence about what the block adds up to.
+        Return only the four required lines. Do not add anything before or after them.
+        </task>
         """
     }
+}
+
+private func goalSpecificityLabel(for goal: String, intent: SessionIntent) -> String {
+    let normalizedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+    if normalizedGoal.isEmpty || normalizedGoal == "work" || normalizedGoal == "stuff" || normalizedGoal == "be productive" {
+        return "unclear"
+    }
+
+    if intent.mode == .unknown || intent.mode == .mixed {
+        return intent.targets.isEmpty && intent.objects.isEmpty ? "unclear" : "broad"
+    }
+
+    let broadPhrases = [
+        "get my day ready",
+        "get ready",
+        "get organized",
+        "reset",
+        "plan my day",
+        "prepare my day",
+        "day ready",
+    ]
+
+    if broadPhrases.contains(where: { normalizedGoal.contains($0) }) {
+        return "broad"
+    }
+
+    if !intent.targets.isEmpty || !intent.objects.isEmpty {
+        return "specific"
+    }
+
+    return "broad"
+}
+
+private func allowedEvidenceMentions(
+    from segments: [TimelineSegment],
+    events: [ActivityEvent],
+    calendarTitles: [String]
+) -> [String] {
+    var mentions: [String] = []
+    var seen: Set<String> = []
+
+    func append(_ value: String?) {
+        guard let value else { return }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return }
+        mentions.append(trimmed)
+    }
+
+    for segment in segments {
+        append(segment.appName)
+        append(segment.primaryLabel)
+        append(segment.secondaryLabel)
+        append(segment.repoName)
+        append(segment.domain)
+        if let filePath = segment.filePath {
+            append(URL(fileURLWithPath: filePath).lastPathComponent)
+        }
+    }
+
+    for title in (events.compactMap(\.windowTitle) + events.compactMap(\.resourceTitle)).prefix(16) {
+        append(cleanedTitleLabel(title))
+    }
+
+    for calendarTitle in calendarTitles {
+        append(calendarTitle)
+    }
+
+    return Array(mentions.prefix(30))
 }
 
 private func normalizedSecondPersonText(_ text: String) -> String {
@@ -424,7 +534,28 @@ private func normalizedReviewText(_ text: String, personName: String?) -> String
         )
     }
 
-    return value
+    let cleanupPatterns: [(String, String)] = [
+        (#"^\s*you,\s*this block\b"#, "This block"),
+        (#"^\s*you,\s*"#, "You "),
+        (#"^\s*,+\s*"#, ""),
+        (#"\n\s*,\s*\n"#, "\n"),
+        (#"\s+([,.;:])"#, "$1"),
+        (#"\s{2,}"#, " "),
+    ]
+
+    for (pattern, replacement) in cleanupPatterns {
+        value = value.replacingOccurrences(
+            of: pattern,
+            with: replacement,
+            options: [.regularExpression]
+        )
+    }
+
+    if let first = value.first, String(first) == "y" {
+        value.replaceSubrange(value.startIndex...value.startIndex, with: "Y")
+    }
+
+    return value.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 private func sanitizedReviewHeadline(_ text: String, goal: String) -> String {
@@ -461,6 +592,134 @@ private func shortDurationLabel(for seconds: Int) -> String {
 
     let minutes = Int((Double(seconds) / 60.0).rounded())
     return "\(max(minutes, 1))m"
+}
+
+private struct SessionPromptFactPack {
+    let frontmostBreakdown: [String]
+    let visibleMedia: [String]
+    let visibleSites: [String]
+    let briefInterruptions: [String]
+    let backgroundContext: [String]
+}
+
+private func sessionPromptFactPack(from segments: [TimelineSegment]) -> SessionPromptFactPack {
+    struct Aggregate {
+        var label: String
+        var seconds: Int
+    }
+
+    func segmentSeconds(_ segment: TimelineSegment) -> Int {
+        max(Int(segment.endAt.timeIntervalSince(segment.startAt).rounded()), 1)
+    }
+
+    func aggregate(
+        matching predicate: (TimelineSegment) -> Bool,
+        label: (TimelineSegment) -> String,
+        limit: Int
+    ) -> [String] {
+        var buckets: [String: Aggregate] = [:]
+        for segment in segments where predicate(segment) {
+            let key = label(segment).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { continue }
+            var current = buckets[key] ?? Aggregate(label: key, seconds: 0)
+            current.seconds += segmentSeconds(segment)
+            buckets[key] = current
+        }
+
+        return buckets.values
+            .sorted { lhs, rhs in
+                if lhs.seconds == rhs.seconds {
+                    return lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
+                }
+                return lhs.seconds > rhs.seconds
+            }
+            .prefix(limit)
+            .map { "\($0.label) — \(naturalDurationLabel(for: $0.seconds))" }
+    }
+
+    let frontmostBreakdown = aggregate(
+        matching: { _ in true },
+        label: { segment in segment.primaryLabel == segment.appName ? segment.appName : segment.primaryLabel },
+        limit: 4
+    )
+
+    let visibleMedia = aggregate(
+        matching: { $0.category == .media || $0.appName.localizedCaseInsensitiveContains("spotify") },
+        label: { segment in
+            if segment.appName.localizedCaseInsensitiveContains("spotify"),
+               segment.primaryLabel.lowercased() != "spotify" {
+                return "\(segment.primaryLabel) on Spotify"
+            }
+            return segment.primaryLabel
+        },
+        limit: 3
+    )
+
+    let visibleSites = aggregate(
+        matching: { ($0.domain?.isEmpty == false) || $0.secondaryLabel != nil },
+        label: { segment in
+            if let domain = segment.domain, !domain.isEmpty {
+                return "\(segment.primaryLabel) on \(domain)"
+            }
+            if let secondary = segment.secondaryLabel, !secondary.isEmpty {
+                return "\(secondary) in \(segment.primaryLabel)"
+            }
+            return segment.primaryLabel
+        },
+        limit: 4
+    )
+
+    let briefInterruptions = segments
+        .filter { segmentSeconds($0) <= 30 }
+        .map { segment in
+            let label = segment.primaryLabel == segment.appName ? segment.appName : segment.primaryLabel
+            return "\(label) — \(naturalDurationLabel(for: segmentSeconds(segment)))"
+        }
+        .orderedUnique()
+        .prefix(4)
+        .map { $0 }
+
+    let backgroundContext = segments
+        .filter { $0.category == .media || $0.category == .social }
+        .map { segment in
+            if segment.appName.localizedCaseInsensitiveContains("spotify"),
+               segment.primaryLabel.lowercased() != "spotify" {
+                return "\(segment.primaryLabel) was visible in Spotify"
+            }
+            return "\(segment.primaryLabel) was visible"
+        }
+        .orderedUnique()
+        .prefix(3)
+        .map { $0 }
+
+    return SessionPromptFactPack(
+        frontmostBreakdown: frontmostBreakdown,
+        visibleMedia: visibleMedia,
+        visibleSites: visibleSites,
+        briefInterruptions: Array(briefInterruptions),
+        backgroundContext: Array(backgroundContext)
+    )
+}
+
+private func naturalDurationLabel(for seconds: Int) -> String {
+    if seconds < 20 {
+        return "a few seconds"
+    }
+    if seconds < 45 {
+        return "about half a minute"
+    }
+    if seconds < 90 {
+        return "under a minute"
+    }
+    if seconds < 150 {
+        return "about 2 minutes"
+    }
+    if seconds < 210 {
+        return "about 3 minutes"
+    }
+
+    let minutes = Int((Double(seconds) / 60.0).rounded())
+    return "about \(max(minutes, 1)) minutes"
 }
 
 private func dominantObservedEntityLabels(
@@ -543,7 +802,6 @@ private struct OllamaTagsResponse: Decodable {
 private struct OllamaGenerateRequest: Encodable {
     let model: String
     let prompt: String
-    let format: String
     let stream: Bool
 }
 
@@ -551,130 +809,86 @@ private struct OllamaGenerateResponse: Decodable {
     let response: String
 }
 
-private struct LocalSessionReviewPayload: Decodable {
-    struct InlineSpan: Decodable {
-        let type: String
-        let text: String
-        let entityKind: String?
-        let ref: String?
+private struct LocalSessionReviewPayload {
+    let headline: String
+    let verdict: SessionVerdict
+    let recap: String
+    let takeaway: String
+}
 
-        enum CodingKeys: String, CodingKey {
-            case type
-            case text
-            case entityKind = "entity_kind"
-            case ref
+private func parsePlainTextReviewPayload(from text: String) -> LocalSessionReviewPayload {
+    let lines = text
+        .split(whereSeparator: \.isNewline)
+        .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+
+    var verdict: SessionVerdict?
+    var headline: String?
+    var recap: String?
+    var takeaway: String?
+
+    for line in lines {
+        if line.uppercased().hasPrefix("VERDICT:") {
+            let value = String(line.dropFirst("VERDICT:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            verdict = normalizedVerdict(from: value)
+            continue
+        }
+        if line.uppercased().hasPrefix("HEADLINE:") {
+            headline = String(line.dropFirst("HEADLINE:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            continue
+        }
+        if line.uppercased().hasPrefix("RECAP:") {
+            recap = String(line.dropFirst("RECAP:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            continue
+        }
+        if line.uppercased().hasPrefix("TAKEAWAY:") {
+            takeaway = String(line.dropFirst("TAKEAWAY:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            continue
         }
     }
 
-    struct KeyMoment: Decodable {
-        let at: String
-        let text: String
-        let url: String?
+    let fallbackLines = lines.filter { line in
+        let upper = line.uppercased()
+        return !upper.hasPrefix("VERDICT:") && !upper.hasPrefix("HEADLINE:") && !upper.hasPrefix("RECAP:") && !upper.hasPrefix("TAKEAWAY:")
     }
 
-    let headline: String
-    let verdict: SessionVerdict
-    let summary: String
-    let summarySpans: [InlineSpan]
-    let interruptions: [String]
-    let interruptionSpans: [[InlineSpan]]
-    let keyMoments: [KeyMoment]
-    let focusAssessment: String?
-    let confidenceNotes: [String]
-
-    init(
-        headline: String,
-        verdict: SessionVerdict,
-        summary: String,
-        summarySpans: [InlineSpan] = [],
-        interruptions: [String] = [],
-        interruptionSpans: [[InlineSpan]] = [],
-        keyMoments: [KeyMoment] = [],
-        focusAssessment: String? = nil,
-        confidenceNotes: [String] = []
-    ) {
-        self.headline = headline
-        self.verdict = verdict
-        self.summary = summary
-        self.summarySpans = summarySpans
-        self.interruptions = interruptions
-        self.interruptionSpans = interruptionSpans
-        self.keyMoments = keyMoments
-        self.focusAssessment = focusAssessment
-        self.confidenceNotes = confidenceNotes
+    if headline == nil, let first = fallbackLines.first {
+        headline = first
     }
-
-    enum CodingKeys: String, CodingKey {
-        case headline
-        case verdict
-        case summary
-        case summarySpans = "summary_spans"
-        case interruptions
-        case interruptionSpans = "interruptions_spans"
-        case keyMoments = "key_moments"
-        case focusAssessment = "focus_assessment"
-        case confidenceNotes = "confidence_notes"
+    if recap == nil {
+        recap = fallbackLines.count > 1 ? fallbackLines[1] : headline
     }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        headline = try container.decode(String.self, forKey: .headline)
-        verdict = try container.decode(SessionVerdict.self, forKey: .verdict)
-        summary = try container.decode(String.self, forKey: .summary)
-        summarySpans = try container.decodeIfPresent([InlineSpan].self, forKey: .summarySpans) ?? []
-        interruptions = try container.decodeIfPresent([String].self, forKey: .interruptions) ?? []
-        interruptionSpans = try container.decodeIfPresent([[InlineSpan]].self, forKey: .interruptionSpans) ?? []
-        keyMoments = try container.decodeIfPresent([KeyMoment].self, forKey: .keyMoments) ?? []
-        focusAssessment = try container.decodeIfPresent(String.self, forKey: .focusAssessment)
-        confidenceNotes = try container.decodeIfPresent([String].self, forKey: .confidenceNotes) ?? []
+    if takeaway == nil {
+        takeaway = fallbackLines.count > 2 ? fallbackLines[2] : recap
     }
-}
-
-private func extractJSONObject(from text: String) -> String {
-    if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}") {
-        return String(text[start...end])
-    }
-    return text
-}
-
-private func decodeLocalSessionReviewPayload(from jsonString: String) throws -> LocalSessionReviewPayload {
-    let data = Data(jsonString.utf8)
-    if let payload = try? JSONDecoder().decode(LocalSessionReviewPayload.self, from: data) {
-        return payload
-    }
-
-    let object = try JSONSerialization.jsonObject(with: data)
-    guard let dictionary = object as? [String: Any] else {
-        throw DecodingError.dataCorrupted(
-            DecodingError.Context(codingPath: [], debugDescription: "Top-level review payload is not an object.")
-        )
-    }
-
-    let headline = (dictionary["headline"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let summary = (dictionary["summary"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let verdict = normalizedVerdict(from: dictionary["verdict"]) ?? .partiallyMatched
-    let summarySpans = parseInlineSpans(dictionary["summary_spans"])
-    let interruptions = parseStringArray(dictionary["interruptions"], limit: 3)
-    let interruptionSpans = parseInlineSpanGroups(dictionary["interruptions_spans"], limit: 3)
-    let keyMoments = parseKeyMoments(dictionary["key_moments"], limit: 6)
-    let focusAssessment = (dictionary["focus_assessment"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let confidenceNotes = parseStringArray(dictionary["confidence_notes"], limit: 4)
 
     return LocalSessionReviewPayload(
-        headline: headline.isEmpty ? "Session review ready." : headline,
-        verdict: verdict,
-        summary: summary.isEmpty ? "The session completed with local evidence only." : summary,
-        summarySpans: summarySpans,
-        interruptions: interruptions,
-        interruptionSpans: interruptionSpans,
-        keyMoments: keyMoments,
-        focusAssessment: focusAssessment,
-        confidenceNotes: confidenceNotes
+        headline: headline?.trimmedOrFallback("Session review ready.") ?? "Session review ready.",
+        verdict: verdict ?? inferredVerdict(from: [headline, recap, takeaway].compactMap { $0 }.joined(separator: " ")),
+        recap: recap?.trimmedOrFallback("The session completed with local evidence only.") ?? "The session completed with local evidence only.",
+        takeaway: takeaway?.trimmedOrFallback("The outcome stayed unclear.") ?? "The outcome stayed unclear."
     )
 }
 
-private func normalizedVerdict(from rawValue: Any?) -> SessionVerdict? {
-    guard let value = rawValue as? String else { return nil }
+private func inferredVerdict(from text: String) -> SessionVerdict {
+    let normalized = text.lowercased()
+    if normalized.contains("mostly did what you meant to do")
+        || normalized.contains("did what you meant to do")
+        || normalized.contains("matched the goal")
+        || normalized.contains("matched the intent") {
+        return .matched
+    }
+    if normalized.contains("did not help")
+        || normalized.contains("drift")
+        || normalized.contains("took over")
+        || normalized.contains("displaced")
+        || normalized.contains("pulled away") {
+        return .missed
+    }
+    return .partiallyMatched
+}
+
+private func normalizedVerdict(from value: String) -> SessionVerdict? {
     let normalized = value
         .trimmingCharacters(in: .whitespacesAndNewlines)
         .lowercased()
@@ -690,49 +904,6 @@ private func normalizedVerdict(from rawValue: Any?) -> SessionVerdict? {
         return .missed
     default:
         return SessionVerdict(rawValue: normalized)
-    }
-}
-
-private func parseStringArray(_ rawValue: Any?, limit: Int) -> [String] {
-    if let strings = rawValue as? [String] {
-        return Array(strings.prefix(limit))
-    }
-    if let string = rawValue as? String {
-        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? [] : [trimmed]
-    }
-    return []
-}
-
-private func parseInlineSpans(_ rawValue: Any?) -> [LocalSessionReviewPayload.InlineSpan] {
-    guard let array = rawValue as? [[String: Any]] else { return [] }
-    return array.compactMap { item in
-        guard let type = item["type"] as? String, let text = item["text"] as? String else { return nil }
-        return LocalSessionReviewPayload.InlineSpan(
-            type: type,
-            text: text,
-            entityKind: item["entity_kind"] as? String,
-            ref: item["ref"] as? String
-        )
-    }
-}
-
-private func parseInlineSpanGroups(_ rawValue: Any?, limit: Int) -> [[LocalSessionReviewPayload.InlineSpan]] {
-    guard let groups = rawValue as? [Any] else { return [] }
-    return Array(groups.prefix(limit)).compactMap { group in
-        parseInlineSpans(group)
-    }
-}
-
-private func parseKeyMoments(_ rawValue: Any?, limit: Int) -> [LocalSessionReviewPayload.KeyMoment] {
-    guard let array = rawValue as? [[String: Any]] else { return [] }
-    return Array(array.prefix(limit)).compactMap { item in
-        guard let at = item["at"] as? String, let text = item["text"] as? String else { return nil }
-        return LocalSessionReviewPayload.KeyMoment(
-            at: at,
-            text: text,
-            url: item["url"] as? String
-        )
     }
 }
 
@@ -759,37 +930,11 @@ private extension String {
     }
 }
 
-private func normalizedRichSpans(_ spans: [LocalSessionReviewPayload.InlineSpan]) -> [SessionReviewInlineSpan] {
-    spans.compactMap { span in
-        let text = normalizedSecondPersonText(span.text).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
-
-        let kind: SessionReviewInlineSpan.Kind
-        switch span.type.lowercased() {
-        case "entity":
-            kind = .entity
-        case "title":
-            kind = .title
-        case "goal":
-            kind = .goal
-        case "code":
-            kind = .code
-        case "file":
-            kind = .file
-        default:
-            kind = .text
-        }
-
-        return SessionReviewInlineSpan(
-            kind: kind,
-            text: text,
-            entityKind: span.entityKind,
-            referenceID: span.ref
-        )
-    }
+private func inferredRichSpans(from text: String, goal: String) -> [SessionReviewInlineSpan] {
+    inferredRichSpans(from: text, goal: goal, segments: [])
 }
 
-private func inferredRichSpans(from text: String, goal: String) -> [SessionReviewInlineSpan] {
+private func inferredRichSpans(from text: String, goal: String, segments: [TimelineSegment]) -> [SessionReviewInlineSpan] {
     let quotedSegments = splitQuotedSegments(in: text)
     var spans: [SessionReviewInlineSpan] = []
     var usedEntityRefs: Set<String> = []
@@ -798,12 +943,25 @@ private func inferredRichSpans(from text: String, goal: String) -> [SessionRevie
         if segment.isQuoted {
             let cleaned = cleanedTitleLabel(segment.text)
             if !cleaned.isEmpty {
-                spans.append(SessionReviewInlineSpan(kind: .title, text: cleaned))
+                spans.append(
+                    SessionReviewInlineSpan(
+                        kind: .title,
+                        text: cleaned,
+                        url: inferredURL(forTitle: cleaned, in: segments)
+                    )
+                )
             }
             continue
         }
 
-        spans.append(contentsOf: inferredPlainSpans(from: segment.text, goal: goal, usedEntityRefs: &usedEntityRefs))
+        spans.append(
+            contentsOf: inferredPlainSpans(
+                from: segment.text,
+                goal: goal,
+                segments: segments,
+                usedEntityRefs: &usedEntityRefs
+            )
+        )
     }
 
     return compactedRichSpans(spans)
@@ -812,6 +970,7 @@ private func inferredRichSpans(from text: String, goal: String) -> [SessionRevie
 private func inferredPlainSpans(
     from text: String,
     goal: String,
+    segments: [TimelineSegment],
     usedEntityRefs: inout Set<String>
 ) -> [SessionReviewInlineSpan] {
     struct Match {
@@ -825,6 +984,7 @@ private func inferredPlainSpans(
         ("Google Docs", "site", "google-docs"),
         ("Google Drive", "site", "google-drive"),
         ("YouTube", "site", "youtube"),
+        ("WhatsApp", "app", "whatsapp"),
         ("Safari", "app", "safari"),
         ("Chrome", "app", "chrome"),
         ("GitHub", "site", "github"),
@@ -832,6 +992,9 @@ private func inferredPlainSpans(
         ("Notion", "site", "notion"),
         ("Cursor", "app", "cursor"),
         ("Codex", "app", "codex"),
+        ("Log Book", "app", "log-book"),
+        ("Logbook app", "app", "log-book"),
+        ("Logbook", "app", "log-book"),
     ]
 
     var matches: [Match] = []
@@ -858,7 +1021,8 @@ private func inferredPlainSpans(
                         kind: .entity,
                         text: text[range].description,
                         entityKind: pattern.kind,
-                        referenceID: pattern.ref
+                        referenceID: pattern.ref,
+                        url: inferredURL(forReferenceID: pattern.ref, text: text[range].description, in: segments)
                     ),
                     ref: pattern.ref
                 )
@@ -927,13 +1091,94 @@ private func compactedRichSpans(_ spans: [SessionReviewInlineSpan]) -> [SessionR
                     kind: span.kind,
                     text: trimmed,
                     entityKind: span.entityKind,
-                    referenceID: span.referenceID
+                    referenceID: span.referenceID,
+                    url: span.url
                 )
             )
         }
     }
 
     return result
+}
+
+private func inferredURL(forReferenceID referenceID: String, text: String, in segments: [TimelineSegment]) -> String? {
+    switch referenceID {
+    case "youtube":
+        return preferredURL(
+            in: segments,
+            primaryDomainMatches: ["youtube.com", "youtu.be"],
+            prefer: { segment in
+                normalizedReviewLabel(segment.secondaryLabel) == normalizedReviewLabel(text) ||
+                normalizedReviewLabel(segment.primaryLabel) == normalizedReviewLabel(text)
+            }
+        )
+    case "github":
+        return preferredURL(
+            in: segments,
+            primaryDomainMatches: ["github.com"],
+            prefer: { segment in
+                normalizedReviewLabel(segment.secondaryLabel) == normalizedReviewLabel(text) ||
+                normalizedReviewLabel(segment.repoName) == normalizedReviewLabel(text)
+            }
+        )
+    case "x":
+        return preferredURL(in: segments, primaryDomainMatches: ["x.com", "twitter.com"])
+    case "notion-calendar":
+        return preferredURL(
+            in: segments,
+            primaryDomainMatches: ["calendar.notion.so"],
+            prefer: { segment in
+                normalizedReviewLabel(segment.secondaryLabel) == normalizedReviewLabel(text) ||
+                normalizedReviewLabel(segment.primaryLabel) == normalizedReviewLabel(text)
+            }
+        )
+    case "google-docs":
+        return preferredURL(in: segments, primaryDomainMatches: ["docs.google.com"])
+    case "google-drive":
+        return preferredURL(in: segments, primaryDomainMatches: ["drive.google.com"])
+    default:
+        return nil
+    }
+}
+
+private func inferredURL(forTitle title: String, in segments: [TimelineSegment]) -> String? {
+    preferredURL(
+        in: segments,
+        primaryDomainMatches: [],
+        prefer: { segment in
+            let normalizedTitle = normalizedReviewLabel(title)
+            return normalizedReviewLabel(segment.secondaryLabel) == normalizedTitle ||
+                normalizedReviewLabel(segment.primaryLabel) == normalizedTitle ||
+                normalizedReviewLabel(cleanedTitleLabel(segment.secondaryLabel ?? "")) == normalizedTitle ||
+                normalizedReviewLabel(cleanedTitleLabel(segment.primaryLabel)) == normalizedTitle
+        }
+    )
+}
+
+private func preferredURL(
+    in segments: [TimelineSegment],
+    primaryDomainMatches: [String],
+    prefer: ((TimelineSegment) -> Bool)? = nil
+) -> String? {
+    let usableSegments = segments.filter { segment in
+        guard let url = segment.url, !url.isEmpty else { return false }
+        if primaryDomainMatches.isEmpty { return true }
+        let domain = (segment.domain ?? "").lowercased()
+        return primaryDomainMatches.contains(domain)
+    }
+
+    if let prefer, let exact = usableSegments.first(where: prefer) {
+        return exact.url
+    }
+
+    return usableSegments.first?.url
+}
+
+private func normalizedReviewLabel(_ value: String?) -> String {
+    guard let value else { return "" }
+    return cleanedTitleLabel(value)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
 }
 
 private func cleanedTitleLabel(_ text: String) -> String {

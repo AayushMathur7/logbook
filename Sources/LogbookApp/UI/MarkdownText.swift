@@ -1,6 +1,7 @@
 import Foundation
 import LogbookCore
 import SwiftUI
+import SVGView
 
 struct MarkdownText: View {
     let markdown: String
@@ -45,8 +46,7 @@ struct MarkdownText: View {
                 attributed[run.range].backgroundColor = LogbookStyle.inlineCodeFill
                 attributed[run.range].font = .system(size: codePointSize, weight: .medium, design: .monospaced)
             } else if intent.contains(.stronglyEmphasized) {
-                let token = String(attributed[run.range].characters)
-                attributed[run.range].foregroundColor = InlineSemanticColor.color(for: token)
+                attributed[run.range].foregroundColor = LogbookStyle.text
             } else if intent.contains(.emphasized) {
                 let token = String(attributed[run.range].characters)
                 attributed[run.range].foregroundColor = InlineSemanticColor.color(for: token).opacity(0.92)
@@ -91,24 +91,33 @@ struct MarkdownFlowText: View {
 }
 
 struct RichReviewText: View {
+    enum EntityStyle {
+        case badge
+        case inlineChip
+        case plain
+    }
+
     let spans: [SessionReviewInlineSpan]
     let fallbackMarkdown: String
     let font: Font
     let color: Color
     var codePointSize: CGFloat = 12
+    var entityStyle: EntityStyle = .badge
 
     init(
         spans: [SessionReviewInlineSpan],
         fallbackMarkdown: String,
         font: Font,
         color: Color = .primary,
-        codePointSize: CGFloat = 12
+        codePointSize: CGFloat = 12,
+        entityStyle: EntityStyle = .badge
     ) {
         self.spans = spans
         self.fallbackMarkdown = fallbackMarkdown
         self.font = font
         self.color = color
         self.codePointSize = codePointSize
+        self.entityStyle = entityStyle
     }
 
     var body: some View {
@@ -116,11 +125,55 @@ struct RichReviewText: View {
             MarkdownText(fallbackMarkdown, font: font, color: color, codePointSize: codePointSize)
         } else {
             InlineWrapLayout(horizontalSpacing: 4, verticalSpacing: 4) {
-                ForEach(Array(spans.enumerated()), id: \.offset) { _, span in
-                    RichReviewInlineSpanView(span: span, font: font, color: color, codePointSize: codePointSize)
+                ForEach(Array(reviewFlowTokens.enumerated()), id: \.offset) { _, token in
+                    RichReviewTokenView(
+                        token: token,
+                        font: font,
+                        color: color,
+                        codePointSize: codePointSize,
+                        entityStyle: entityStyle
+                    )
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var reviewFlowTokens: [RichReviewFlowToken] {
+        spans.flatMap { span in
+            flowTokens(for: span)
+        }
+    }
+
+    private func flowTokens(for span: SessionReviewInlineSpan) -> [RichReviewFlowToken] {
+        switch span.kind {
+        case .text:
+            return flowTokens(fromMarkdown: span.text)
+        case .entity:
+            return [.entity(text: span.text, badge: SourceBadgeFactory.inlineBadge(for: span.text), url: span.url)]
+        case .title:
+            return [.emphasis(span.text, url: span.url)]
+        case .goal:
+            return flowTokens(fromMarkdown: "**\(span.text)**")
+        case .code, .file:
+            return [.code(span.text, url: span.url)]
+        }
+    }
+
+    private func flowTokens(fromMarkdown markdown: String) -> [RichReviewFlowToken] {
+        MarkdownInlineParser.tokens(from: markdown).map { token in
+            switch token.kind {
+            case let .text(value):
+                return .text(value)
+            case let .strong(value):
+                return .strong(value)
+            case let .emphasis(value):
+                return .emphasis(value, url: nil)
+            case let .code(value):
+                return .code(value, url: nil)
+            case let .badge(badge):
+                return .entity(text: badge.label, badge: badge, url: nil)
+            }
         }
     }
 }
@@ -141,8 +194,7 @@ private struct InlineTokenView: View {
         case let .strong(value):
             Text(value)
                 .font(font)
-                .fontWeight(.semibold)
-                .foregroundStyle(InlineSemanticColor.color(for: value))
+                .foregroundStyle(LogbookStyle.text)
                 .fixedSize()
         case let .emphasis(value):
             Text(value)
@@ -172,56 +224,219 @@ private struct InlineTokenView: View {
     }
 }
 
-private struct RichReviewInlineSpanView: View {
-    let span: SessionReviewInlineSpan
+private enum RichReviewFlowToken {
+    case text(String)
+    case strong(String)
+    case emphasis(String, url: String?)
+    case code(String, url: String?)
+    case entity(text: String, badge: SourceBadgeModel?, url: String?)
+}
+
+private struct RichReviewTokenView: View {
+    @Environment(\.openURL) private var openURL
+
+    let token: RichReviewFlowToken
     let font: Font
     let color: Color
     let codePointSize: CGFloat
+    let entityStyle: RichReviewText.EntityStyle
 
     var body: some View {
-        switch span.kind {
-        case .text:
-            Text(span.text)
+        switch token {
+        case let .text(value):
+            Text(value)
                 .font(font)
                 .foregroundStyle(color)
                 .fixedSize()
-        case .entity:
-            if let badge = SourceBadgeFactory.inlineBadge(for: span.text) {
-                SourceBadge(badge: badge)
-                    .fixedSize()
+        case let .strong(value):
+            Text(value)
+                .font(font)
+                .foregroundStyle(LogbookStyle.text)
+                .fixedSize()
+        case let .emphasis(value, url):
+            linkedText(
+                value,
+                urlString: url,
+                font: font,
+                color: InlineSemanticColor.color(for: value).opacity(0.92),
+                italic: true
+            )
+        case let .entity(text, badge, url):
+            if let badge {
+                switch entityStyle {
+                case .badge:
+                    linkedBadge(SourceBadge(badge: badge), urlString: url)
+                case .inlineChip:
+                    linkedBadge(InlineEntityChip(badge: badge, font: font, isLinked: url != nil), urlString: url)
+                case .plain:
+                    linkedText(text, urlString: url, font: font, color: color)
+                }
             } else {
-                Text(span.text)
-                    .font(font)
-                    .foregroundStyle(color)
-                    .fixedSize()
+                linkedText(text, urlString: url, font: font, color: color)
             }
-        case .title:
-            Text(span.text)
-                .font(font)
-                .italic()
-                .foregroundStyle(InlineSemanticColor.color(for: span.text).opacity(0.92))
-                .fixedSize()
-        case .goal:
-            Text(span.text)
-                .font(font)
-                .fontWeight(.semibold)
-                .foregroundStyle(color)
-                .fixedSize()
-        case .code, .file:
-            Text(span.text)
-                .font(LogbookStyle.codeFont(size: codePointSize, weight: .medium))
-                .foregroundStyle(InlineSemanticColor.color(for: span.text))
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(LogbookStyle.inlineCodeFill)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .stroke(LogbookStyle.inlineCodeStroke, lineWidth: 1)
-                )
-                .fixedSize()
+        case let .code(value, url):
+            linkedCode(value, urlString: url)
+        }
+    }
+
+    @ViewBuilder
+    private func linkedText(
+        _ value: String,
+        urlString: String?,
+        font: Font,
+        color: Color,
+        italic: Bool = false
+    ) -> some View {
+        let base = Text(value)
+            .font(font)
+            .foregroundStyle(color)
+            .underline(urlString != nil)
+            .italic(italic)
+            .fixedSize()
+
+        if let urlString, let url = URL(string: urlString) {
+            Button {
+                openURL(url)
+            } label: {
+                base
+            }
+            .buttonStyle(.plain)
+            .help(urlString)
+        } else {
+            base
+        }
+    }
+
+    @ViewBuilder
+    private func linkedBadge<V: View>(_ view: V, urlString: String?) -> some View {
+        if let urlString, let url = URL(string: urlString) {
+            Button {
+                openURL(url)
+            } label: {
+                view
+            }
+            .buttonStyle(.plain)
+            .help(urlString)
+        } else {
+            view.fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private func linkedCode(_ value: String, urlString: String?) -> some View {
+        let codeView = Text(value)
+            .font(LogbookStyle.codeFont(size: codePointSize, weight: .medium))
+            .foregroundStyle(InlineSemanticColor.color(for: value))
+            .underline(urlString != nil)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(LogbookStyle.inlineCodeFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .stroke(LogbookStyle.inlineCodeStroke, lineWidth: 1)
+            )
+            .fixedSize()
+
+        if let urlString, let url = URL(string: urlString) {
+            Button {
+                openURL(url)
+            } label: {
+                codeView
+            }
+            .buttonStyle(.plain)
+            .help(urlString)
+        } else {
+            codeView
+        }
+    }
+}
+
+private struct InlineEntityChip: View {
+    let badge: SourceBadgeModel
+    let font: Font
+    var isLinked = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if badge.icon != .none {
+                InlineEntityChipIcon(icon: badge.icon)
+            }
+
+            if !isIconOnly {
+                Text(shortLabel)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .underline(isLinked)
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(LogbookStyle.subtleText)
+        .padding(.horizontal, isIconOnly ? 4 : 5)
+        .padding(.vertical, 1.5)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(LogbookStyle.badgeFill.opacity(0.72))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .stroke(LogbookStyle.badgeStroke.opacity(0.65), lineWidth: 1)
+        )
+        .help(badge.label)
+        .fixedSize()
+    }
+
+    private var shortLabel: String {
+        if badge.label == "Log Book" {
+            return "Log Book"
+        }
+        return badge.label
+    }
+
+    private var isIconOnly: Bool {
+        if case .brandAsset("x") = badge.icon {
+            return true
+        }
+        return false
+    }
+}
+
+private struct InlineEntityChipIcon: View {
+    let icon: SourceBadgeIcon
+
+    var body: some View {
+        switch icon {
+        case .none:
+            EmptyView()
+        case let .app(bundleID):
+            if let image = AppIconCache.shared.icon(for: bundleID) {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 11, height: 11)
+                    .clipShape(RoundedRectangle(cornerRadius: 2.5, style: .continuous))
+            }
+        case let .brandAsset(assetName):
+            if let logoURL = BrandLogoRegistry.url(for: assetName) {
+                SVGView(contentsOf: logoURL)
+                    .frame(width: assetName == "x" ? 10 : 11, height: assetName == "x" ? 10 : 11)
+            }
+        case let .brandMonogram(value):
+            ZStack {
+                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                    .fill(LogbookStyle.badgeFill.opacity(0.8))
+                Text(value)
+                    .font(.system(size: 7, weight: .bold, design: .rounded))
+                    .foregroundStyle(LogbookStyle.subtleText)
+            }
+            .frame(width: 11, height: 11)
+        case let .system(systemName):
+            Image(systemName: systemName)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(LogbookStyle.subtleText)
+                .frame(width: 11, height: 11)
         }
     }
 }
