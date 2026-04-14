@@ -2,35 +2,30 @@
 
 ## Current status
 
-Driftly currently runs best for technical users who are comfortable installing a local model and running the app from source.
+Driftly can be run from source today.
 
-The polished public install path is still in progress.
+The repo also includes a DMG packaging path, but public distribution still needs signing, notarization, and clean-machine testing.
 
 ## Run from source
 
 From the repo root:
 
 ```bash
-SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build-local/clang-cache \
-CLANG_MODULE_CACHE_PATH=$PWD/.build-local/clang-cache \
-swift run --scratch-path $PWD/.build-local DriftlyApp
+./scripts/dev.sh
 ```
 
 ## What you need
 
 - macOS 13 or newer
-- a local Ollama install if you want AI review
 - Accessibility permission if you want window titles and stronger context
+- a local Ollama install if you want AI review
+- shell integration if you want terminal commands captured
 
-## If Ollama is not ready
+## Review generation
 
-You can still use Driftly without a local model.
+Session review generation is Ollama-only.
 
-The app will:
-
-- save the session
-- keep the local event timeline
-- skip AI review generation
+If Ollama is not installed or no model is configured, Driftly still saves the session and timeline, but it does not generate a review.
 
 ## Validation
 

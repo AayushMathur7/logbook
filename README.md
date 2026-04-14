@@ -1,40 +1,46 @@
 # Driftly
 
-Driftly is a local-first macOS app that tells you whether your work session actually matched the goal you started with.
+Driftly is a local-first macOS app for one question:
 
-You type a goal, start a session, do your work, and Driftly gives you a short review in plain English at the end.
+Did this work block become the thing I meant to do?
 
-## Why It Exists
+You set a goal, start a session, do your work, and Driftly reviews the block against what actually happened.
 
-Most productivity tools measure activity.
+## Why Driftly Exists
+
+Most productivity tools measure motion.
 
 Driftly measures alignment.
 
-It is built to answer one question:
+It is built for people who do deep work in messy, real desktops and want a clearer answer than "you were active for 97 minutes."
 
-Did this block become the thing I meant to do?
+## How It Works
+
+1. Write what you want this block to become.
+2. Start the session.
+3. Driftly captures lightweight local context while you work.
+4. End the session.
+5. Driftly turns the session into a short review.
 
 ## Quick Start
 
-1. Clone the repo on a Mac running macOS 13 or newer.
-2. Run Driftly from the repo root:
+From the repo root on a Mac running macOS 13 or newer:
 
 ```bash
 ./scripts/dev.sh
 ```
 
-3. Grant Accessibility when macOS asks.
-4. Start one session with a clear goal.
-5. Read the review at the end.
+Then:
 
-If you want AI review generation, install Ollama locally first. If not, Driftly still saves the session and timeline, but review generation will not run.
+1. Open Driftly.
+2. Grant Accessibility if you want better context.
+3. Start a session with a clear goal.
+4. End the session and read the review.
 
-## Setup
-
-Required or recommended setup:
+## What You Need
 
 - macOS 13 or newer
-- Accessibility if you want window titles and richer context
+- Accessibility if you want window and page titles instead of generic app-only activity
 - Ollama if you want AI review generation
 - shell integration if you want terminal commands captured
 
@@ -43,6 +49,12 @@ Shell integration:
 ```zsh
 source "/absolute/path/to/driftly/integrations/shell/driftly.zsh"
 ```
+
+Important:
+
+- Driftly reviews are Ollama-only.
+- If Ollama is not installed or no model is configured, Driftly still saves the session and timeline, but it does not generate a review.
+- There is no fallback review mode.
 
 ## What It Captures
 
@@ -67,23 +79,31 @@ It does not capture:
 
 ## Privacy
 
-Driftly is designed to stay local.
+Driftly is built to stay local.
 
-- captured session data stays on your Mac
+- session data stays on your Mac
 - the database lives at `~/Library/Application Support/Driftly/driftly.sqlite`
-- AI review generation is local through Ollama
+- AI review generation runs locally through Ollama
 
 See [PRIVACY.md](/Users/aayush/ai-projects/driftly/PRIVACY.md:1) for the full privacy model.
 
-## Current Status
+## Releasing Driftly
 
-Driftly is usable now, but it is not yet packaged as a polished signed and notarized public Mac download.
+This repo now includes a release path for building a real macOS app bundle and DMG.
 
-See:
+Build a release app:
 
-- [docs/install.md](/Users/aayush/ai-projects/driftly/docs/install.md:1)
-- [docs/release-macos.md](/Users/aayush/ai-projects/driftly/docs/release-macos.md:1)
-- [docs/launch-checklist.md](/Users/aayush/ai-projects/driftly/docs/launch-checklist.md:1)
+```bash
+./scripts/build-app-bundle.sh --configuration release
+```
+
+Package a DMG:
+
+```bash
+./scripts/package-dmg.sh
+```
+
+For public distribution, the app should be signed, notarized, and shipped as a DMG. See [docs/release-macos.md](/Users/aayush/ai-projects/driftly/docs/release-macos.md:1).
 
 ## Validation
 
@@ -91,21 +111,17 @@ See:
 bash scripts/check.sh
 ```
 
-You can also launch it with:
+Or run:
 
 ```bash
 make run
 ```
 
-## For Builders
+## Repo Guide
 
-- `Sources/DriftlyApp` contains the SwiftUI macOS app
-- `Sources/DriftlyCore` contains shared models, storage, privacy rules, and timeline logic
-- `Sources/driftly` contains the small CLI
-- `Sources/driftlyselftest` contains the self-test runner
-
-## More
-
+- [docs/install.md](/Users/aayush/ai-projects/driftly/docs/install.md:1)
+- [docs/release-macos.md](/Users/aayush/ai-projects/driftly/docs/release-macos.md:1)
+- [docs/launch-checklist.md](/Users/aayush/ai-projects/driftly/docs/launch-checklist.md:1)
+- [AGENT.md](/Users/aayush/ai-projects/driftly/AGENT.md:1)
 - [LICENSE](/Users/aayush/ai-projects/driftly/LICENSE:1)
 - [SECURITY.md](/Users/aayush/ai-projects/driftly/SECURITY.md:1)
-- [AGENT.md](/Users/aayush/ai-projects/driftly/AGENT.md:1)
