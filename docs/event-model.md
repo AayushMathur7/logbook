@@ -2,7 +2,7 @@
 
 ## Canonical Type
 
-The runtime event model lives in `Sources/LogbookCore/ActivityModels.swift`.
+The runtime event model lives in `Sources/DriftlyCore/ActivityModels.swift`.
 
 ```json
 {
@@ -12,10 +12,10 @@ The runtime event model lives in `Sources/LogbookCore/ActivityModels.swift`.
   "kind": "tabChanged",
   "appName": "Google Chrome",
   "bundleID": "com.google.Chrome",
-  "windowTitle": "GitHub - openai/logbook",
+  "windowTitle": "GitHub - AayushMathur7/driftly",
   "path": null,
-  "resourceTitle": "openai/logbook pull request",
-  "resourceURL": "https://github.com/openai/logbook/pull/42",
+  "resourceTitle": "AayushMathur7/driftly pull request",
+  "resourceURL": "https://github.com/AayushMathur7/driftly/pull/42",
   "domain": "github.com",
   "clipboardPreview": null,
   "noteText": null,

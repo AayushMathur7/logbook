@@ -8,7 +8,7 @@ required_files=(
   "docs/v1-spec.md"
   "docs/technical-architecture.md"
   "docs/event-model.md"
-  "integrations/shell/logbook.zsh"
+  "integrations/shell/driftly.zsh"
 )
 
 for path in "${required_files[@]}"; do
@@ -22,6 +22,6 @@ export SWIFTPM_MODULECACHE_OVERRIDE="${PWD}/.build-local/clang-cache"
 export CLANG_MODULE_CACHE_PATH="${PWD}/.build-local/clang-cache"
 
 swift build --scratch-path "${PWD}/.build-local"
-swift run --scratch-path "${PWD}/.build-local" logbook-selftest
+swift run --scratch-path "${PWD}/.build-local" driftly-selftest
 
 echo "Scaffold and build check passed."

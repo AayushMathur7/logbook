@@ -1,6 +1,6 @@
 # macOS Release Guide
 
-This document describes what still needs to be true before LogBook is ready for a public macOS release.
+This document describes what still needs to be true before Driftly is ready for a public macOS release.
 
 ## Current gap
 

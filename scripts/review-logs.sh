@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-LOG_FILE="${HOME}/Library/Application Support/Logbook/review-debug.log"
+LOG_FILE="${HOME}/Library/Application Support/Driftly/review-debug.log"
 
 if [[ ! -f "${LOG_FILE}" ]]; then
   echo "No review log file yet."

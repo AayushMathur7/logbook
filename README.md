@@ -1,6 +1,6 @@
-# LogBook
+# Driftly
 
-LogBook is a local-first macOS app that helps you compare the work you planned with the work that actually happened during a session.
+Driftly is a local-first macOS app that helps you compare the work you planned with the work that actually happened during a session.
 
 You type a goal, start a timer, let the app capture lightweight local signals, and then read a short review in plain English.
 
@@ -15,7 +15,7 @@ The product is intentionally opinionated:
 1. Write what you are focusing on.
 2. Pick a session length.
 3. Start the session.
-4. Let LogBook capture lightweight local evidence during the block.
+4. Let Driftly capture lightweight local evidence during the block.
 5. End the block or let the timer finish.
 6. Read a short review and save it to history.
 
@@ -27,12 +27,12 @@ Current UX:
 
 ## Product Shape
 
-LogBook is built around intent, not a hardcoded idea of productivity.
+Driftly is built around intent, not a hardcoded idea of productivity.
 
 Examples:
 
 - `watch YouTube` can be a matched session if the block mostly stayed on YouTube
-- `deploy logbook to github` can count GitHub, coding tools, and repo context as aligned work
+- `deploy driftly to github` can count GitHub, coding tools, and repo context as aligned work
 - `get my day ready` is broader, so the review should describe the block honestly instead of pretending it has stronger certainty than the evidence supports
 
 The review UI currently focuses on:
@@ -48,12 +48,12 @@ The review UI currently focuses on:
 In simple terms:
 
 - you say what this block is for
-- LogBook watches lightweight local signals during that block
+- Driftly watches lightweight local signals during that block
 - at the end, it tells you whether the block stayed on track
 
 ## What It Captures
 
-LogBook captures lightweight local signals during a session window.
+Driftly captures lightweight local signals during a session window.
 
 Current capture includes:
 
@@ -62,7 +62,7 @@ Current capture includes:
 - active window titles when Accessibility is granted
 - browser page titles, URLs, and domains for supported browsers
 - Finder context when available
-- shell commands imported from `integrations/shell/logbook.zsh`
+- shell commands imported from `integrations/shell/driftly.zsh`
 - file activity under watched roots
 - clipboard changes with a short preview
 
@@ -87,12 +87,12 @@ The app is designed to stay small and local:
 Runtime storage lives at:
 
 ```text
-~/Library/Application Support/Logbook/logbook.sqlite
+~/Library/Application Support/Driftly/driftly.sqlite
 ```
 
 ## Local Review Generation
 
-LogBook currently uses Ollama for AI review generation.
+Driftly currently uses Ollama for AI review generation.
 
 Important constraints:
 
@@ -113,19 +113,19 @@ If Ollama is not configured or fails, the app still saves the session and can fa
 
 This repo currently contains:
 
-- `Sources/LogbookApp` for the SwiftUI macOS app
-- `Sources/LogbookCore` for shared models, SQLite storage, privacy rules, and timeline derivation
-- `Sources/logbook` for a small CLI to inspect stored data
-- `Sources/logbookselftest` for the self-test runner
+- `Sources/DriftlyApp` for the SwiftUI macOS app
+- `Sources/DriftlyCore` for shared models, SQLite storage, privacy rules, and timeline derivation
+- `Sources/driftly` for a small CLI to inspect stored data
+- `Sources/driftlyselftest` for the self-test runner
 
 Key files:
 
-- `Sources/LogbookApp/ContentView.swift` for the main app surface
-- `Sources/LogbookApp/AppModel.swift` for session lifecycle, capture orchestration, history, and review persistence
-- `Sources/LogbookApp/AIProviderBridge.swift` for Ollama integration, prompt construction, and review parsing
-- `Sources/LogbookApp/UI/MarkdownText.swift` for inline review rendering and linked badges
-- `Sources/LogbookCore/TimelineDeriver.swift` for timeline enrichment and intent-aware interpretation
-- `Sources/LogbookCore/SessionStore.swift` for SQLite persistence
+- `Sources/DriftlyApp/ContentView.swift` for the main app surface
+- `Sources/DriftlyApp/AppModel.swift` for session lifecycle, capture orchestration, history, and review persistence
+- `Sources/DriftlyApp/AIProviderBridge.swift` for Ollama integration, prompt construction, and review parsing
+- `Sources/DriftlyApp/UI/MarkdownText.swift` for inline review rendering and linked badges
+- `Sources/DriftlyCore/TimelineDeriver.swift` for timeline enrichment and intent-aware interpretation
+- `Sources/DriftlyCore/SessionStore.swift` for SQLite persistence
 
 ## Running The App
 
@@ -134,7 +134,7 @@ From the repo root:
 ```bash
 SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build-local/clang-cache \
 CLANG_MODULE_CACHE_PATH=$PWD/.build-local/clang-cache \
-swift run --scratch-path $PWD/.build-local LogbookApp
+swift run --scratch-path $PWD/.build-local DriftlyApp
 ```
 
 If you prefer to build first:
@@ -144,7 +144,7 @@ SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build-local/clang-cache \
 CLANG_MODULE_CACHE_PATH=$PWD/.build-local/clang-cache \
 swift build --scratch-path $PWD/.build-local
 
-./.build-local/debug/LogbookApp
+./.build-local/debug/DriftlyApp
 ```
 
 ## Validation
@@ -158,9 +158,9 @@ bash scripts/check.sh
 Useful CLI commands:
 
 ```bash
-swift run --scratch-path $PWD/.build-local logbook view
-swift run --scratch-path $PWD/.build-local logbook view --events --limit 20
-swift run --scratch-path $PWD/.build-local logbook view --summary
+swift run --scratch-path $PWD/.build-local driftly view
+swift run --scratch-path $PWD/.build-local driftly view --events --limit 20
+swift run --scratch-path $PWD/.build-local driftly view --summary
 ```
 
 ## Shell Integration
@@ -168,7 +168,7 @@ swift run --scratch-path $PWD/.build-local logbook view --summary
 If you want terminal commands to show up in captured evidence, add this to your shell config:
 
 ```zsh
-source "/absolute/path/to/logbook/integrations/shell/logbook.zsh"
+source "/absolute/path/to/driftly/integrations/shell/driftly.zsh"
 ```
 
 Then open a new shell session.

@@ -3,15 +3,15 @@
 import PackageDescription
 
 let package = Package(
-    name: "Logbook",
+    name: "Driftly",
     platforms: [
         .macOS(.v13),
     ],
     products: [
-        .library(name: "LogbookCore", targets: ["LogbookCore"]),
-        .executable(name: "LogbookApp", targets: ["LogbookApp"]),
-        .executable(name: "logbook", targets: ["logbook"]),
-        .executable(name: "logbook-selftest", targets: ["logbook-selftest"]),
+        .library(name: "DriftlyCore", targets: ["DriftlyCore"]),
+        .executable(name: "DriftlyApp", targets: ["DriftlyApp"]),
+        .executable(name: "driftly", targets: ["driftly"]),
+        .executable(name: "driftly-selftest", targets: ["driftly-selftest"]),
     ],
     dependencies: [
         .package(url: "https://github.com/appstefan/highlightswift.git", exact: "1.0.5"),
@@ -19,33 +19,33 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "LogbookCore",
-            path: "Sources/LogbookCore",
+            name: "DriftlyCore",
+            path: "Sources/DriftlyCore",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
             ]
         ),
         .executableTarget(
-            name: "LogbookApp",
+            name: "DriftlyApp",
             dependencies: [
-                "LogbookCore",
+                "DriftlyCore",
                 .product(name: "HighlightSwift", package: "highlightswift"),
                 .product(name: "SVGView", package: "SVGView"),
             ],
-            path: "Sources/LogbookApp",
+            path: "Sources/DriftlyApp",
             resources: [
                 .process("Resources"),
             ]
         ),
         .executableTarget(
-            name: "logbook",
-            dependencies: ["LogbookCore"],
-            path: "Sources/logbook"
+            name: "driftly",
+            dependencies: ["DriftlyCore"],
+            path: "Sources/driftly"
         ),
         .executableTarget(
-            name: "logbook-selftest",
-            dependencies: ["LogbookCore"],
-            path: "Sources/logbookselftest"
+            name: "driftly-selftest",
+            dependencies: ["DriftlyCore"],
+            path: "Sources/driftlyselftest"
         ),
     ]
 )

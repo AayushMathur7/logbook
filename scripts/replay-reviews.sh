@@ -2,4 +2,4 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-swift run LogbookApp --replay-reviews --strict "$@"
+swift run DriftlyApp --replay-reviews --strict "$@"

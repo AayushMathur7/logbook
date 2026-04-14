@@ -1,6 +1,6 @@
 # Launch Checklist
 
-This is the shortest practical list of what still needs to be true before LogBook is ready for outside users.
+This is the shortest practical list of what still needs to be true before Driftly is ready for outside users.
 
 ## Product
 

@@ -1,8 +1,8 @@
-# Logbook V1 Spec
+# Driftly V1 Spec
 
 ## Product
 
-Logbook is a session-based macOS app for answering one question at the end of a work block:
+Driftly is a session-based macOS app for answering one question at the end of a work block:
 
 `What was I actually doing, and did it match what I meant to do?`
 
@@ -15,7 +15,7 @@ V1 is intentionally narrow. It is not trying to be an always-on memory system, a
 1. Enter a goal.
 2. Pick a duration.
 3. Start the session.
-4. Let the block run quietly while Logbook captures lightweight local evidence.
+4. Let the block run quietly while Driftly captures lightweight local evidence.
 5. Read the review when the block ends.
 6. Save the block to History.
 

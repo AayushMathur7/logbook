@@ -2,11 +2,11 @@
 
 ## Goal
 
-Turn LogBook from a post-session reviewer into a quiet in-session recovery tool.
+Turn Driftly from a post-session reviewer into a quiet in-session recovery tool.
 
 The core promise is:
 
-`LogBook catches focus breaks early and helps you get back on track.`
+`Driftly catches focus breaks early and helps you get back on track.`
 
 ## What Changes
 
@@ -43,7 +43,7 @@ Cooldown rules:
 - `Snooze` adds a 10-minute suppression window
 - prompt cap stays at 2 per session
 
-If the user gets back on track within 2 minutes of a prompt, LogBook records that as a recovery.
+If the user gets back on track within 2 minutes of a prompt, Driftly records that as a recovery.
 
 ## UI
 

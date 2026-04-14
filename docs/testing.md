@@ -12,7 +12,7 @@ That currently does:
 
 1. required-file checks
 2. `swift build`
-3. `swift run logbook-selftest`
+3. `swift run driftly-selftest`
 
 ## Self-Test Coverage
 
@@ -45,7 +45,7 @@ The automated tests do not cover:
 For manual verification, run:
 
 ```bash
-swift run LogbookApp
+swift run DriftlyApp
 ```
 
 Then verify:

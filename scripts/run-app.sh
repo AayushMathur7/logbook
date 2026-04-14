@@ -4,10 +4,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT}/dist"
-APP_NAME="LogBook.app"
+APP_NAME="Driftly.app"
 APP_BUNDLE="${DIST_DIR}/${APP_NAME}"
-BUNDLE_EXECUTABLE="${APP_BUNDLE}/Contents/MacOS/LogbookApp"
-LOG_PATH="${DIST_DIR}/logbookapp.log"
+BUNDLE_EXECUTABLE="${APP_BUNDLE}/Contents/MacOS/DriftlyApp"
+LOG_PATH="${DIST_DIR}/driftlyapp.log"
 
 is_running() {
   ps -Ao command | grep -F "${BUNDLE_EXECUTABLE}" | grep -v grep >/dev/null 2>&1
@@ -15,14 +15,14 @@ is_running() {
 
 mkdir -p "${DIST_DIR}"
 
-BINARY_PATH="$(find "${ROOT}/.build" -path '*/debug/LogbookApp' -type f | head -n 1)"
+BINARY_PATH="$(find "${ROOT}/.build" -path '*/debug/DriftlyApp' -type f | head -n 1)"
 if [[ -z "${BINARY_PATH}" ]]; then
-  swift build --product LogbookApp
-  BINARY_PATH="$(find "${ROOT}/.build" -path '*/debug/LogbookApp' -type f | head -n 1)"
+  swift build --product DriftlyApp
+  BINARY_PATH="$(find "${ROOT}/.build" -path '*/debug/DriftlyApp' -type f | head -n 1)"
 fi
 
 if [[ -z "${BINARY_PATH}" ]]; then
-  echo "Could not find built LogbookApp binary."
+  echo "Could not find built DriftlyApp binary."
   exit 1
 fi
 
@@ -46,15 +46,15 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleExecutable</key>
-  <string>LogbookApp</string>
+  <string>DriftlyApp</string>
   <key>CFBundleIdentifier</key>
-  <string>com.aayush.logbook.dev</string>
+  <string>com.aayush.driftly.dev</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>LogBook</string>
+  <string>Driftly</string>
   <key>CFBundleDisplayName</key>
-  <string>LogBook</string>
+  <string>Driftly</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -71,11 +71,11 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-chmod +x "${APP_BUNDLE}/Contents/MacOS/LogbookApp"
+chmod +x "${APP_BUNDLE}/Contents/MacOS/DriftlyApp"
 
 if is_running; then
-  osascript -e 'tell application "System Events" to tell process "LogbookApp" to set frontmost to true' >/dev/null 2>&1 || true
-  echo "LogBook is already running."
+  osascript -e 'tell application "System Events" to tell process "DriftlyApp" to set frontmost to true' >/dev/null 2>&1 || true
+  echo "Driftly is already running."
   echo "Built app bundle at:"
   echo "${APP_BUNDLE}"
   exit 0
@@ -86,18 +86,18 @@ nohup "${BUNDLE_EXECUTABLE}" >"${LOG_PATH}" 2>&1 &
 sleep 1
 
 if is_running; then
-  osascript -e 'tell application "System Events" to tell process "LogbookApp" to set frontmost to true' >/dev/null 2>&1 || true
+  osascript -e 'tell application "System Events" to tell process "DriftlyApp" to set frontmost to true' >/dev/null 2>&1 || true
   echo "Built app bundle at:"
   echo "${APP_BUNDLE}"
   echo
-  echo "Launched LogBook."
+  echo "Launched Driftly."
   exit 0
 fi
 
 echo "Built app bundle at:"
 echo "${APP_BUNDLE}"
 echo
-echo "LogBook did not stay running."
+echo "Driftly did not stay running."
 echo "Check the launch log at:"
 echo "${LOG_PATH}"
 exit 1

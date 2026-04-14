@@ -2,7 +2,7 @@
 
 ## Current status
 
-LogBook currently runs best for technical users who are comfortable installing a local model and running the app from source.
+Driftly currently runs best for technical users who are comfortable installing a local model and running the app from source.
 
 The polished public install path is still in progress.
 
@@ -13,7 +13,7 @@ From the repo root:
 ```bash
 SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build-local/clang-cache \
 CLANG_MODULE_CACHE_PATH=$PWD/.build-local/clang-cache \
-swift run --scratch-path $PWD/.build-local LogbookApp
+swift run --scratch-path $PWD/.build-local DriftlyApp
 ```
 
 ## What you need
@@ -24,7 +24,7 @@ swift run --scratch-path $PWD/.build-local LogbookApp
 
 ## If Ollama is not ready
 
-You can still use LogBook without a local model.
+You can still use Driftly without a local model.
 
 The app will:
 

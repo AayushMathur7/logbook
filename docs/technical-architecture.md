@@ -4,8 +4,8 @@
 
 The current architecture is:
 
-- `LogbookApp` captures signals in-process
-- `LogbookCore` holds shared models, privacy rules, timeline derivation, and storage
+- `DriftlyApp` captures signals in-process
+- `DriftlyCore` holds shared models, privacy rules, timeline derivation, and storage
 - local SQLite stores events, sessions, reviews, settings, and review feedback
 - Ollama is the only review provider and is restricted to localhost
 
@@ -13,9 +13,9 @@ There is no daemon process today. Capture starts and stops from the app itself.
 
 ## Main Components
 
-### `LogbookCore`
+### `DriftlyCore`
 
-Shared code in `Sources/LogbookCore`.
+Shared code in `Sources/DriftlyCore`.
 
 Responsibilities:
 
@@ -27,9 +27,9 @@ Responsibilities:
 - session review models
 - SQLite persistence
 
-### `LogbookApp`
+### `DriftlyApp`
 
-SwiftUI macOS app in `Sources/LogbookApp`.
+SwiftUI macOS app in `Sources/DriftlyApp`.
 
 Responsibilities:
 
@@ -40,11 +40,11 @@ Responsibilities:
 - review generation
 - history and feedback flows
 
-### `logbook`
+### `driftly`
 
 CLI for inspecting locally stored events and sessions.
 
-### `logbook-selftest`
+### `driftly-selftest`
 
 Self-test runner for privacy filtering, timeline derivation, observability logic, and review feedback persistence.
 
@@ -84,7 +84,7 @@ AppleScript-backed path inspection:
 
 The shell hook writes structured command events into:
 
-- `~/Library/Application Support/Logbook/inbox/terminal.tsv`
+- `~/Library/Application Support/Driftly/inbox/terminal.tsv`
 
 The app imports those events on a timer.
 
@@ -108,7 +108,7 @@ The app also captures:
 
 The runtime database lives at:
 
-- `~/Library/Application Support/Logbook/logbook.sqlite`
+- `~/Library/Application Support/Driftly/driftly.sqlite`
 
 The store currently persists:
 
