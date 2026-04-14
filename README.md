@@ -1,38 +1,65 @@
 # Driftly
 
-Driftly is a local-first macOS app that helps you compare the work you planned with the work that actually happened during a session.
+Driftly is a local-first macOS app that tells you whether your work session stayed true to the goal you set.
 
-You type a goal, start a timer, let the app capture lightweight local signals, and then read a short review in plain English.
+You start with a simple sentence like `ship the onboarding fix` or `write the investor update`. Driftly watches lightweight local signals during that block and gives you a short, plain-English review of what actually happened.
+
+It is built for people who do focused computer work and want a more honest answer than "you were active for 47 minutes."
+
+## Why Driftly Exists
+
+Most productivity tools measure motion.
+
+Driftly measures alignment.
+
+It is not trying to score your whole day. It is trying to answer one question at the end of one block:
+
+`Did this session become the thing I meant to do?`
+
+That makes it useful for:
+
+- developers trying to protect build or shipping time
+- founders trying to keep sessions tied to real priorities
+- writers and researchers trying to notice when the block quietly drifted
+- anyone who wants a quick review instead of another dashboard
+
+## What You Get
+
+- A goal-first session flow
+- A short review in plain English after each block
+- Session history you can reopen later
+- A local timeline built from lightweight evidence
+- Optional local AI review generation through Ollama
 
 The product is intentionally opinionated:
 
-- it compares the session against the goal you typed
-- it gives you a short recap instead of a dashboard
-- it uses local evidence instead of generic productivity scores
+- you define the session goal
+- Driftly compares the block against that goal
+- the output is a short recap, not a productivity score
 
-## Core Loop
+## How It Works
 
-1. Write what you are focusing on.
+1. Type what this session is for.
 2. Pick a session length.
-3. Start the session.
+3. Start the timer.
 4. Let Driftly capture lightweight local evidence during the block.
-5. End the block or let the timer finish.
-6. Read a short review and save it to history.
+5. End the session or let the timer finish.
+6. Read a short review of how the block actually went.
 
-Current UX:
+In simple terms:
 
-- `Session` is the main surface for setup, running, and the latest review.
-- `History` lets you reopen past sessions and retry their reviews.
-- `Settings` controls capture sources, privacy rules, retention, and local model configuration.
+- you say what this block is for
+- Driftly watches lightweight local signals during that block
+- at the end, it tells you whether the block stayed on track
 
-## Product Shape
+## Why It Feels Different
 
 Driftly is built around intent, not a hardcoded idea of productivity.
 
 Examples:
 
 - `watch YouTube` can be a matched session if the block mostly stayed on YouTube
-- `deploy driftly to github` can count GitHub, coding tools, and repo context as aligned work
+- `deploy driftly to github` can treat GitHub, terminal work, code editors, and repo context as aligned work
 - `get my day ready` is broader, so the review should describe the block honestly instead of pretending it has stronger certainty than the evidence supports
 
 The review UI currently focuses on:
@@ -45,17 +72,11 @@ The review UI currently focuses on:
 - saved history for past sessions
 - per-review feedback so the app can learn what framing was helpful or wrong
 
-In simple terms:
+## Privacy By Design
 
-- you say what this block is for
-- Driftly watches lightweight local signals during that block
-- at the end, it tells you whether the block stayed on track
+Driftly is designed to stay lightweight and local.
 
-## What It Captures
-
-Driftly captures lightweight local signals during a session window.
-
-Current capture includes:
+It can capture:
 
 - frontmost app changes, launches, and terminations
 - wake and sleep
@@ -74,60 +95,36 @@ It does not capture:
 - camera or microphone
 - keystrokes
 
-## Why It Stays Lightweight
-
-The app is designed to stay small and local:
-
-- capture is session-scoped and event-based rather than media-heavy
-- there is no screenshot, screen recording, or transcript pipeline
-- storage stays in a local SQLite database under Application Support
-- raw events are pruned by retention settings
-- model calls are restricted to a local Ollama host
-
-Runtime storage lives at:
+Storage stays local in:
 
 ```text
 ~/Library/Application Support/Driftly/driftly.sqlite
 ```
 
-## Local Review Generation
+If you use AI review generation, Driftly currently talks only to a local Ollama host. There is no cloud fallback and no hidden remote model call path.
 
-Driftly currently uses Ollama for AI review generation.
+See [PRIVACY.md](/Users/aayush/ai-projects/driftly/PRIVACY.md:1) for the full privacy model.
 
-Important constraints:
+## Current Status
 
-- localhost only
-- no cloud fallback
-- no remote model hosts
-- no hidden network calls beyond your configured local Ollama instance
+Driftly is promising, but it is not yet packaged as a polished public Mac download for non-technical users.
 
-Default base URL:
+Right now the project is best suited for:
 
-```text
-http://127.0.0.1:11434
-```
+- technical users who can run a macOS app from source
+- early testers comfortable granting macOS permissions
+- people who are already comfortable installing Ollama locally if they want AI review
 
-If Ollama is not configured or fails, the app still saves the session and can fall back to a local non-LLM review.
+The public release gap is mostly distribution and onboarding:
 
-## Repository Layout
+- signed macOS app distribution
+- notarized releases
+- smoother first-run setup
+- clearer install path for non-technical users
 
-This repo currently contains:
+See [docs/install.md](/Users/aayush/ai-projects/driftly/docs/install.md:1), [docs/release-macos.md](/Users/aayush/ai-projects/driftly/docs/release-macos.md:1), and [docs/launch-checklist.md](/Users/aayush/ai-projects/driftly/docs/launch-checklist.md:1).
 
-- `Sources/DriftlyApp` for the SwiftUI macOS app
-- `Sources/DriftlyCore` for shared models, SQLite storage, privacy rules, and timeline derivation
-- `Sources/driftly` for a small CLI to inspect stored data
-- `Sources/driftlyselftest` for the self-test runner
-
-Key files:
-
-- `Sources/DriftlyApp/ContentView.swift` for the main app surface
-- `Sources/DriftlyApp/AppModel.swift` for session lifecycle, capture orchestration, history, and review persistence
-- `Sources/DriftlyApp/AIProviderBridge.swift` for Ollama integration, prompt construction, and review parsing
-- `Sources/DriftlyApp/UI/MarkdownText.swift` for inline review rendering and linked badges
-- `Sources/DriftlyCore/TimelineDeriver.swift` for timeline enrichment and intent-aware interpretation
-- `Sources/DriftlyCore/SessionStore.swift` for SQLite persistence
-
-## Running The App
+## Run From Source
 
 From the repo root:
 
@@ -146,6 +143,14 @@ swift build --scratch-path $PWD/.build-local
 
 ./.build-local/debug/DriftlyApp
 ```
+
+What you need:
+
+- macOS 13 or newer
+- Accessibility permission if you want stronger context capture
+- a local Ollama install if you want AI review generation
+
+If Ollama is not ready, Driftly can still save sessions, keep the local event timeline, and generate a simpler non-LLM review.
 
 ## Validation
 
@@ -173,28 +178,36 @@ source "/absolute/path/to/driftly/integrations/shell/driftly.zsh"
 
 Then open a new shell session.
 
-## Privacy Notes
+## Repository Layout
 
-The app is designed to stay local:
+This repo currently contains:
 
-- capture happens on-device
-- storage stays on-device
-- review generation stays local through Ollama
+- `Sources/DriftlyApp` for the SwiftUI macOS app
+- `Sources/DriftlyCore` for shared models, SQLite storage, privacy rules, and timeline derivation
+- `Sources/driftly` for a small CLI to inspect stored data
+- `Sources/driftlyselftest` for the self-test runner
 
-Exclusions, redactions, retention, and watched paths are configured in `Settings`.
+Key files:
 
-See also:
-
-- `LICENSE`
-- `PRIVACY.md`
-- `SECURITY.md`
-- `docs/install.md`
-- `docs/release-macos.md`
-- `docs/launch-checklist.md`
+- `Sources/DriftlyApp/ContentView.swift` for the main app surface
+- `Sources/DriftlyApp/AppModel.swift` for session lifecycle, capture orchestration, history, and review persistence
+- `Sources/DriftlyApp/AIProviderBridge.swift` for Ollama integration, prompt construction, and review parsing
+- `Sources/DriftlyApp/UI/MarkdownText.swift` for inline review rendering and linked badges
+- `Sources/DriftlyCore/TimelineDeriver.swift` for timeline enrichment and intent-aware interpretation
+- `Sources/DriftlyCore/SessionStore.swift` for SQLite persistence
 
 ## Current Limitations
 
 - review quality still depends on the captured evidence and prompt quality
 - app and browser context are best-effort and depend on macOS permissions
 - browser and Finder inspection still depend on AppleScript and can be flaky
-- the current launch story is optimized for technical users who can run a local model
+- the current launch story is still optimized for technical users
+
+## More
+
+- [LICENSE](/Users/aayush/ai-projects/driftly/LICENSE:1)
+- [PRIVACY.md](/Users/aayush/ai-projects/driftly/PRIVACY.md:1)
+- [SECURITY.md](/Users/aayush/ai-projects/driftly/SECURITY.md:1)
+- [docs/install.md](/Users/aayush/ai-projects/driftly/docs/install.md:1)
+- [docs/release-macos.md](/Users/aayush/ai-projects/driftly/docs/release-macos.md:1)
+- [docs/launch-checklist.md](/Users/aayush/ai-projects/driftly/docs/launch-checklist.md:1)
