@@ -105,6 +105,14 @@ Package a DMG:
 
 For public distribution, the app should be signed, notarized, and shipped as a DMG. See [docs/release-macos.md](/Users/aayush/ai-projects/driftly/docs/release-macos.md:1).
 
+## Beta Download
+
+Beta builds should be shipped through GitHub Releases:
+
+- [See the latest releases](https://github.com/AayushMathur7/driftly/releases)
+
+If you share an unsigned beta DMG, macOS may ask the user to manually allow Driftly in Privacy & Security the first time they open it.
+
 ## Validation
 
 ```bash
