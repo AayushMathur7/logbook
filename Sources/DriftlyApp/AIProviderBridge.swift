@@ -350,7 +350,7 @@ enum AIProviderBridge: LocalReviewProvider {
 
         return """
         Write a sharp, human review of one desktop session from local evidence.
-        You are not here to be polite. You are here to say what actually dominated the block.
+        Your job is to judge whether the block stayed aligned with the goal, not to narrate raw app usage.
 
         Return only one JSON object with exactly these keys:
         - headline
@@ -362,17 +362,21 @@ enum AIProviderBridge: LocalReviewProvider {
         - Never use the person's name.
         - Address the person directly as "you" or "your".
         - `headline` and `summary` must do different jobs.
-        - Headline under 14 words and no colon.
-        - `headline` must be a judgment about the block, not a literal activity label.
+        - Headline under 10 words and no colon.
+        - `headline` must name what the block became, not just what app was open.
         - Do not use a bare activity phrase like "Watching YouTube videos" or "Using Chrome" as the headline.
-        - Prefer headlines with strong judgment words like "took", "won", "pulled", "owned", "never became", or "stayed in".
+        - Prefer calm judgment phrases like "This block shifted into...", "This session became...", "This stayed on...", or "This never really became..."
+        - Do not use blamey or robotic phrases like "you got pulled into", "X took this block", "accounted for", or "you spent the session".
         - `summary` may be one or two sentences and should stay under 55 words.
+        - `summary` must explain the session shape, not just restate timing facts.
         - `summary` must add concrete evidence that is not already stated in the headline.
         - `summary` must include:
           1. the dominant surface or app
           2. at least one numeric fact from the computed facts below
           3. one concrete title, page, or surface when available
           4. the work surface that lost, when it is visible
+        - Treat app names as evidence, not as the answer.
+        - Judge the session against the goal first. A browser, Codex, Cursor, YouTube, or X can all be on-goal if the visible work supports the goal.
         - Do not restate the headline with light paraphrasing.
         - `summary` renders directly in the UI. Do not output XML, HTML, app tags, link tags, code fences, JSON inside strings, or raw URLs.
         - Plain markdown is allowed, but use it lightly.
@@ -382,18 +386,18 @@ enum AIProviderBridge: LocalReviewProvider {
         - If the title is generic, missing, or redacted, do not guess.
         - If the same block includes both browser-shell facts and site facts, trust the site facts and ignore the browser shell.
         - `insight` must be exactly one sentence and under 18 words.
-        - `insight` must be a concrete correction or rule, not gentle advice.
+        - `insight` must be one calm next move or framing correction, not a scolding command.
         - `insight` must be actionable right away, not just observational.
-        - Prefer a stop-and-replace rule: stop one behavior and name the next surface or order to use instead.
+        - Prefer a stop-and-replace rule or a reframing rule: stop one behavior and name the next surface or framing to use instead.
         - If the block drifted to YouTube, X, passive media, or unrelated browsing, `insight` should say what to cut or close next.
         - If the block partly matched the goal, `insight` should say what to keep and what to remove.
         - `insight` must move toward the stated goal, not deeper into the distraction.
         - Never tell the person to continue scrolling, watching, or browsing a distraction surface unless the goal explicitly asked for that same surface.
         - For vague goals, default the replacement action toward planning, coding, writing, or the visible work tool, not the distraction.
-        - Good insight: "Do not open X before Codex."
-        - Good insight: "Close YouTube and reopen Codex."
-        - Good insight: "Start in Codex, then check mail after the block."
-        - Good insight: "Close YouTube and go straight to Codex."
+        - Good insight: "If Codex is the real task, name the next block around it."
+        - Good insight: "Close YouTube and return to the repo thread in Codex."
+        - Good insight: "Keep the research, but cut the feed hopping."
+        - Good insight: "Restart this as a Codex block if that is the real work."
         - Bad insight: "Complete the X feed review first."
         - Bad insight: "Close YouTube before the next block."
         - Bad insight: "Maintain focus on your primary tasks."
@@ -409,8 +413,8 @@ enum AIProviderBridge: LocalReviewProvider {
         - Prior pattern memory is soft context only. Use it to judge what is normal for this user, but never let it override the current-session facts.
         - `insight` must act on the same dominant distraction or winning surface already named in the headline or summary.
         - Do not introduce a new app or site in `insight` unless it clearly consumed more time than the named distraction.
-        - Good `summary` example: "YouTube took about 4 of 5 minutes, mainly on Taylor Swift interview clips, while Codex barely appeared."
-        - Good `summary` example: "X held 68% of the block, mostly on the Home feed, while Codex only appeared briefly."
+        - Good `summary` example: "Most of the block stayed on YouTube, mainly Taylor Swift interview clips, while Codex only appeared briefly for about a minute."
+        - Good `summary` example: "X held about 68% of the block, mostly on the Home feed, while Codex only showed up in short checks."
         - Bad `summary` example: "You spent the session primarily browsing social media."
         - Bad `summary` example: "The session involved content on several surfaces."
         - Keep `insight` plain text.
@@ -424,12 +428,15 @@ enum AIProviderBridge: LocalReviewProvider {
         - Never imply one app performed an action that happened on another site or surface.
         - If YouTube and Codex both appear, say which one dominated and how long each held the session.
         - If Driftly only appears as a quick app switch or review surface, keep it secondary.
-        - Do not say "you spent the session", "primarily", "content", "main goal", "returning to your main goal", or "refocus on".
+        - If the session changed shape but still looks useful, say that plainly instead of forcing a distraction narrative.
+        - If the evidence is mixed, say that plainly instead of pretending certainty.
+        - Do not say "you spent the session", "accounted for", "main goal", "returning to your main goal", or "refocus on".
         - Never say "desktop activity", "during this time period", "desired focus work", "stated goal", or "lack of concentration".
         - Bad headline: "Watching YouTube videos"
-        - Good headline: "You got pulled into YouTube"
+        - Good headline: "This block shifted into YouTube"
         - Bad headline: "Session summary"
-        - Good headline: "X took this block"
+        - Good headline: "This session became feed checking"
+        - Good headline: "This block stayed on the repo"
 
         Goal: \(title)
         Time: \(ActivityFormatting.shortTime.string(from: startedAt)) to \(ActivityFormatting.shortTime.string(from: endedAt))
@@ -1089,15 +1096,15 @@ private struct OllamaJSONSchema: Encodable {
         properties: [
             "headline": OllamaJSONSchemaProperty(
                 type: "string",
-                description: "Short review title. Under 12 words."
+                description: "Short judgment about what the block became. Under 10 words."
             ),
             "summary": OllamaJSONSchemaProperty(
                 type: "string",
-                description: "Plain text summary of what happened in the session. Under 48 words."
+                description: "Plain text interpretation of how the session compared with the goal, using concrete evidence. Under 48 words."
             ),
             "insight": OllamaJSONSchemaProperty(
                 type: "string",
-                description: "One sharp insight or recommendation that adds interpretation, not repetition."
+                description: "One calm, specific next move or reframing sentence that helps correct or continue the work."
             ),
         ],
         required: ["headline", "summary", "insight"],
