@@ -632,6 +632,7 @@ public struct SessionReviewInlineSpan: Hashable, Codable {
     public enum Kind: String, Hashable, Codable {
         case text
         case entity
+        case link
         case title
         case goal
         case code

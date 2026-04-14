@@ -1,16 +1,15 @@
 # Launch Checklist
 
-This is the shortest practical list of what still needs to be true before Log Book is ready for outside users.
+This is the shortest practical list of what still needs to be true before LogBook is ready for outside users.
 
 ## Product
 
 - Make the one-line promise clear in simple English.
 - Keep the app focused on one job: compare the goal you typed with what the session became.
-- Decide how central Calendar should be. Recommended: make it an optional power feature, not the whole product.
 
 ## Onboarding
 
-- Add a first-run flow for Accessibility, Calendar, and Ollama setup.
+- Add a first-run flow for Accessibility and Ollama setup.
 - Detect whether Ollama is installed and whether a model is selected.
 - Make the first successful session easy. Do not let users get lost in settings before they see value.
 
@@ -43,6 +42,6 @@ This is the shortest practical list of what still needs to be true before Log Bo
 
 ## Suggested next product hooks
 
-- Calendar-backed session checking: “Did the hour match what was on your calendar?”
 - Stronger drift detection: “What took over this block?”
 - Better interruption framing: “What broke your focus?”
+- Better session honesty: “You touched the task, but the block turned into something else.”

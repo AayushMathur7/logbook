@@ -168,6 +168,14 @@ enum LogbookCLI {
             return "Capture Paused"
         case .captureResumed:
             return "Capture Resumed"
+        case .focusGuardPrompted:
+            return "Focus Guard Prompted"
+        case .focusGuardRecovered:
+            return "Focus Guard Recovered"
+        case .focusGuardSnoozed:
+            return "Focus Guard Snoozed"
+        case .focusGuardIgnored:
+            return "Focus Guard Ignored"
         }
     }
     

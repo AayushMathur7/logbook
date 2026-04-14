@@ -123,7 +123,7 @@ The store currently persists:
 
 1. Collect all events between `startedAt` and `endedAt`.
 2. Derive timeline segments and intent-aware observations.
-3. Build a structured prompt from the goal, events, timeline, and nearby calendar titles.
+3. Build a structured prompt from the goal, events, and derived timeline.
 4. Send the prompt to Ollama over localhost.
 5. Parse the result into a short review.
 6. Enrich the review locally with inline spans, dominant apps, session path, and attention segments.

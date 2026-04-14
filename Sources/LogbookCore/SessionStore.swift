@@ -130,6 +130,17 @@ public final class SessionStore {
         try execute(db, sql: "UPDATE session_reviews SET debug_prompt = NULL, debug_raw_response = NULL")
     }
 
+    public func clearSessionReview(sessionID: String) throws {
+        guard let db else { throw SessionStoreError.unavailable }
+        try execute(
+            db,
+            sql: "DELETE FROM session_reviews WHERE session_id = ?",
+            bind: { statement in
+                sqlite3_bind_text(statement, 1, sessionID, -1, SQLITE_TRANSIENT)
+            }
+        )
+    }
+
     public func saveReviewFeedback(_ feedback: SessionReviewFeedback) throws {
         guard let db else { throw SessionStoreError.unavailable }
         try execute(
@@ -620,6 +631,7 @@ public final class SessionStore {
             return
         }
 
+        sqlite3_busy_timeout(db, 2_500)
         _ = sqlite3_exec(db, "PRAGMA foreign_keys = ON", nil, nil, nil)
         _ = sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
         _ = sqlite3_exec(db, "PRAGMA synchronous = NORMAL", nil, nil, nil)
@@ -741,7 +753,7 @@ public enum SessionStoreError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .unavailable:
-            return "Log Book could not open its local database."
+            return "LogBook could not open its local database."
         case let .sqlite(message):
             return message
         }

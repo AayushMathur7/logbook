@@ -8,6 +8,7 @@ struct SelfTestFailure: Error, CustomStringConvertible {
 enum LogbookSelfTest {
     static func run() {
         let tests: [(String, () throws -> Void)] = [
+            ("capture settings map legacy focus guard toggle to preset", testCaptureSettingsLegacyFocusGuardDecode),
             ("privacy excludes by bundle ID", testPrivacyExcludeBundleID),
             ("privacy excludes by domain", testPrivacyExcludeDomain),
             ("privacy excludes by path prefix", testPrivacyExcludePath),
@@ -30,6 +31,19 @@ enum LogbookSelfTest {
             ("review feedback overwrites and keeps snapshots", testReviewFeedbackOverwriteAndSnapshots),
             ("prompt-ready feedback examples filter noise", testPromptReadyFeedbackExampleFiltering),
             ("review learning memory round trips", testReviewLearningMemoryRoundTrip),
+            ("path noise filter drops macOS temp churn", testPathNoiseFilterDropsTempChurn),
+            ("focus guard waits five minutes before nudging", testFocusGuardWaitsBeforePrompting),
+            ("focus guard stays quiet when idle or near session end", testFocusGuardSkipsIdleAndNearEnd),
+            ("focus guard needs ninety seconds of continuous drift", testFocusGuardRequiresContinuousDrift),
+            ("focus guard keeps ambiguous sessions unclear", testFocusGuardKeepsAmbiguousSessionsQuiet),
+            ("focus guard catches dominant drift even with nearby work", testFocusGuardCatchesDominantDrift),
+            ("focus guard respects cooldowns", testFocusGuardRespectsCooldown),
+            ("focus guard caps prompts per session", testFocusGuardCapsSessionPrompts),
+            ("focus guard preset scales prompt caps by session length", testFocusGuardPresetScalesPromptCaps),
+            ("focus guard snooze suppresses prompts", testFocusGuardSnoozeSuppressesPrompt),
+            ("focus guard records recovery when work resumes", testFocusGuardRecordsRecovery),
+            ("focus guard review summary includes prompt facts", testFocusGuardReviewSummaryIncludesFacts),
+            ("focus guard disabled never prompts", testFocusGuardDisabledNeverPrompts),
         ]
 
         let startedAt = Date()
@@ -70,6 +84,20 @@ enum LogbookSelfTest {
         guard condition() else {
             throw SelfTestFailure(description: message)
         }
+    }
+
+    static func testCaptureSettingsLegacyFocusGuardDecode() throws {
+        let enabledJSON = #"{"focusGuardEnabled":true}"#
+        let enabledData = Data(enabledJSON.utf8)
+        let enabledSettings = try JSONDecoder().decode(CaptureSettings.self, from: enabledData)
+        try require(enabledSettings.focusGuardPreset == .balanced, "expected legacy enabled toggle to map to balanced preset")
+        try require(enabledSettings.focusGuardEnabled, "expected balanced preset to keep focus guard enabled")
+
+        let disabledJSON = #"{"focusGuardEnabled":false}"#
+        let disabledData = Data(disabledJSON.utf8)
+        let disabledSettings = try JSONDecoder().decode(CaptureSettings.self, from: disabledData)
+        try require(disabledSettings.focusGuardPreset == .off, "expected legacy disabled toggle to map to off preset")
+        try require(!disabledSettings.focusGuardEnabled, "expected off preset to disable focus guard")
     }
 
     static func testPrivacyExcludeBundleID() throws {
@@ -687,6 +715,354 @@ enum LogbookSelfTest {
         try require(loaded?.sourceFeedbackCount == 4, "expected source feedback count to round trip")
         try require(loaded?.learnings.count == 2, "expected learnings to round trip")
         try require(loaded?.learnings.first?.contains("YouTube") == true, "expected first learning to persist")
+    }
+
+    static func testPathNoiseFilterDropsTempChurn() throws {
+        try require(
+            PathNoiseFilter.shouldIgnoreFileActivity(
+                path: "/var/folders/fx/abc123/T/TemporaryItems/NSIRD_screencaptureui_X4LJFl/.tmp.Ds5jV9CR"
+            ),
+            "expected screenshot temp files to be ignored"
+        )
+        try require(
+            PathNoiseFilter.shouldIgnoreFileActivity(
+                path: "/Users/aayush/ai-projects/logbook/.tmp.partial.tmp"
+            ),
+            "expected temporary .tmp files to be ignored"
+        )
+        try require(
+            !PathNoiseFilter.shouldIgnoreFileActivity(
+                path: "/Users/aayush/ai-projects/logbook/Sources/LogbookApp/AppModel.swift"
+            ),
+            "expected normal project files to remain visible"
+        )
+    }
+
+    static func testFocusGuardWaitsBeforePrompting() throws {
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        let session = makeFocusGuardSession(startedAt: startedAt, durationMinutes: 30)
+        let events = [
+            makeYouTubeDriftEvent(at: startedAt.addingTimeInterval(60)),
+        ]
+
+        let decision = FocusGuardEvaluator.evaluate(
+            goal: "ship the settings migration",
+            session: session,
+            events: events,
+            state: FocusGuardRuntimeState(),
+            now: startedAt.addingTimeInterval(4 * 60),
+            isUserIdle: false
+        )
+
+        try require(!decision.shouldPrompt, "expected no prompt before five minutes")
+    }
+
+    static func testFocusGuardSkipsIdleAndNearEnd() throws {
+        let startedAt = Date(timeIntervalSince1970: 2_000)
+        let session = makeFocusGuardSession(startedAt: startedAt, durationMinutes: 10)
+        let events = [
+            makeYouTubeDriftEvent(at: startedAt.addingTimeInterval(5 * 60)),
+        ]
+
+        let idleDecision = FocusGuardEvaluator.evaluate(
+            goal: "ship the settings migration",
+            session: session,
+            events: events,
+            state: FocusGuardRuntimeState(),
+            now: startedAt.addingTimeInterval(7 * 60),
+            isUserIdle: true
+        )
+        try require(!idleDecision.shouldPrompt, "expected no prompt while idle")
+
+        let nearEndDecision = FocusGuardEvaluator.evaluate(
+            goal: "ship the settings migration",
+            session: session,
+            events: events,
+            state: FocusGuardRuntimeState(),
+            now: session.endsAt.addingTimeInterval(-90),
+            isUserIdle: false
+        )
+        try require(!nearEndDecision.shouldPrompt, "expected no prompt in the final two minutes")
+    }
+
+    static func testFocusGuardRequiresContinuousDrift() throws {
+        let startedAt = Date(timeIntervalSince1970: 3_000)
+        let session = makeFocusGuardSession(startedAt: startedAt, durationMinutes: 30)
+        let firstState = FocusGuardRuntimeState(offTrackStartedAt: startedAt.addingTimeInterval(5 * 60))
+        let events = [
+            makeYouTubeDriftEvent(at: startedAt.addingTimeInterval(5 * 60)),
+        ]
+
+        let earlyDecision = FocusGuardEvaluator.evaluate(
+            goal: "ship the settings migration",
+            session: session,
+            events: events,
+            state: firstState,
+            now: startedAt.addingTimeInterval(6 * 60),
+            isUserIdle: false
+        )
+        try require(!earlyDecision.shouldPrompt, "expected no prompt before ninety seconds of drift")
+
+        let readyDecision = FocusGuardEvaluator.evaluate(
+            goal: "ship the settings migration",
+            session: session,
+            events: events,
+            state: firstState,
+            now: startedAt.addingTimeInterval(6 * 60 + 40),
+            isUserIdle: false
+        )
+        try require(readyDecision.shouldPrompt, "expected prompt once drift is continuous for ninety seconds")
+    }
+
+    static func testFocusGuardKeepsAmbiguousSessionsQuiet() throws {
+        let startedAt = Date(timeIntervalSince1970: 4_000)
+        let session = makeFocusGuardSession(startedAt: startedAt, durationMinutes: 30)
+        let events = [
+            makeGitHubSupportEvent(at: startedAt.addingTimeInterval(5 * 60)),
+            makeYouTubeDriftEvent(at: startedAt.addingTimeInterval(6 * 60 + 30)),
+        ]
+
+        let decision = FocusGuardEvaluator.evaluate(
+            goal: "ship the settings migration",
+            session: session,
+            events: events,
+            state: FocusGuardRuntimeState(),
+            now: startedAt.addingTimeInterval(8 * 60),
+            isUserIdle: false
+        )
+
+        try require(decision.assessment.status == .unclear, "expected mixed evidence to stay unclear")
+        try require(!decision.shouldPrompt, "expected no prompt for ambiguous sessions")
+    }
+
+    static func testFocusGuardCatchesDominantDrift() throws {
+        let startedAt = Date(timeIntervalSince1970: 4_500)
+        let session = makeFocusGuardSession(startedAt: startedAt, durationMinutes: 30)
+        let events = [
+            makeGitHubSupportEvent(at: startedAt.addingTimeInterval(5 * 60)),
+            makeYouTubeDriftEvent(at: startedAt.addingTimeInterval(5 * 60 + 30)),
+        ]
+
+        let decision = FocusGuardEvaluator.evaluate(
+            goal: "ship the settings migration",
+            session: session,
+            events: events,
+            state: FocusGuardRuntimeState(),
+            now: startedAt.addingTimeInterval(7 * 60 + 40),
+            isUserIdle: false
+        )
+
+        try require(decision.assessment.status == .offTrack, "expected dominant recent YouTube drift to count as off-track")
+        try require(decision.shouldPrompt, "expected a prompt once drift clearly dominates nearby work")
+    }
+
+    static func testFocusGuardRespectsCooldown() throws {
+        let startedAt = Date(timeIntervalSince1970: 5_000)
+        let session = makeFocusGuardSession(startedAt: startedAt, durationMinutes: 30)
+        let events = [
+            makeYouTubeDriftEvent(at: startedAt.addingTimeInterval(5 * 60)),
+        ]
+        let state = FocusGuardRuntimeState(
+            offTrackStartedAt: startedAt.addingTimeInterval(5 * 60),
+            lastPromptAt: startedAt.addingTimeInterval(6 * 60),
+            promptCount: 1,
+            pendingRecoveryFromPromptAt: startedAt.addingTimeInterval(6 * 60)
+        )
+
+        let decision = FocusGuardEvaluator.evaluate(
+            goal: "ship the settings migration",
+            session: session,
+            events: events,
+            state: state,
+            now: startedAt.addingTimeInterval(11 * 60),
+            isUserIdle: false
+        )
+
+        try require(!decision.shouldPrompt, "expected cooldown to suppress a second prompt")
+    }
+
+    static func testFocusGuardCapsSessionPrompts() throws {
+        let startedAt = Date(timeIntervalSince1970: 6_000)
+        let session = makeFocusGuardSession(startedAt: startedAt, durationMinutes: 30)
+        let events = [
+            makeYouTubeDriftEvent(at: startedAt.addingTimeInterval(5 * 60)),
+        ]
+        let state = FocusGuardRuntimeState(
+            offTrackStartedAt: startedAt.addingTimeInterval(5 * 60),
+            promptCount: 2
+        )
+
+        let decision = FocusGuardEvaluator.evaluate(
+            goal: "ship the settings migration",
+            session: session,
+            events: events,
+            state: state,
+            now: startedAt.addingTimeInterval(8 * 60),
+            isUserIdle: false
+        )
+
+        try require(!decision.shouldPrompt, "expected prompt cap to suppress additional nudges")
+    }
+
+    static func testFocusGuardPresetScalesPromptCaps() throws {
+        let startedAt = Date(timeIntervalSince1970: 6_500)
+        let settings = FocusGuardPreset.balanced.settings
+        let events = [
+            makeYouTubeDriftEvent(at: startedAt.addingTimeInterval(2 * 60)),
+        ]
+
+        let mediumSessionDecision = FocusGuardEvaluator.evaluate(
+            goal: "ship the settings migration",
+            session: makeFocusGuardSession(startedAt: startedAt, durationMinutes: 30),
+            events: events,
+            settings: settings,
+            state: FocusGuardRuntimeState(offTrackStartedAt: startedAt.addingTimeInterval(2 * 60), promptCount: 2),
+            now: startedAt.addingTimeInterval(4 * 60),
+            isUserIdle: false
+        )
+        try require(!mediumSessionDecision.shouldPrompt, "expected 30 minute session to cap at two prompts in balanced mode")
+
+        let longSessionDecision = FocusGuardEvaluator.evaluate(
+            goal: "ship the settings migration",
+            session: makeFocusGuardSession(startedAt: startedAt, durationMinutes: 45),
+            events: events,
+            settings: settings,
+            state: FocusGuardRuntimeState(offTrackStartedAt: startedAt.addingTimeInterval(2 * 60), promptCount: 2),
+            now: startedAt.addingTimeInterval(4 * 60),
+            isUserIdle: false
+        )
+        try require(longSessionDecision.shouldPrompt, "expected longer balanced session to allow a third prompt")
+    }
+
+    static func testFocusGuardSnoozeSuppressesPrompt() throws {
+        let startedAt = Date(timeIntervalSince1970: 7_000)
+        let session = makeFocusGuardSession(startedAt: startedAt, durationMinutes: 30)
+        let events = [
+            makeYouTubeDriftEvent(at: startedAt.addingTimeInterval(5 * 60)),
+        ]
+        let state = FocusGuardRuntimeState(
+            offTrackStartedAt: startedAt.addingTimeInterval(5 * 60),
+            snoozedUntil: startedAt.addingTimeInterval(12 * 60)
+        )
+
+        let decision = FocusGuardEvaluator.evaluate(
+            goal: "ship the settings migration",
+            session: session,
+            events: events,
+            state: state,
+            now: startedAt.addingTimeInterval(8 * 60),
+            isUserIdle: false
+        )
+
+        try require(!decision.shouldPrompt, "expected snooze to suppress prompts")
+    }
+
+    static func testFocusGuardRecordsRecovery() throws {
+        let startedAt = Date(timeIntervalSince1970: 8_000)
+        let session = makeFocusGuardSession(startedAt: startedAt, durationMinutes: 30)
+        let events = [
+            makeGitHubSupportEvent(at: startedAt.addingTimeInterval(10 * 60)),
+        ]
+        let state = FocusGuardRuntimeState(
+            pendingRecoveryFromPromptAt: startedAt.addingTimeInterval(9 * 60)
+        )
+
+        let decision = FocusGuardEvaluator.evaluate(
+            goal: "ship the settings migration",
+            session: session,
+            events: events,
+            state: state,
+            now: startedAt.addingTimeInterval(10 * 60 + 30),
+            isUserIdle: false
+        )
+
+        try require(decision.recordedRecovery, "expected recovery to be recorded after returning on track")
+        try require(decision.state.lastRecoveryAt != nil, "expected recovery timestamp to be stored")
+    }
+
+    static func testFocusGuardReviewSummaryIncludesFacts() throws {
+        let now = Date(timeIntervalSince1970: 9_000)
+        let sessionID = "fg-summary"
+        let events = [
+            ActivityEvent(
+                occurredAt: now,
+                source: .manual,
+                kind: .focusGuardPrompted,
+                appName: "LogBook",
+                resourceTitle: "Recent activity looks more like YouTube than work on this goal.",
+                noteText: "You drifted to YouTube. Back to ship the settings migration?",
+                relatedID: sessionID
+            ),
+            ActivityEvent(
+                occurredAt: now.addingTimeInterval(60),
+                source: .manual,
+                kind: .focusGuardRecovered,
+                appName: "LogBook",
+                relatedID: sessionID
+            ),
+        ]
+
+        let summary = FocusGuardEvaluator.reviewSummary(from: events, sessionID: sessionID)
+
+        try require(summary.promptsShown == 1, "expected one prompt in summary")
+        try require(summary.recoveries == 1, "expected one recovery in summary")
+        try require(summary.recapSentence?.contains("back on track") == true, "expected recap sentence to mention recovery")
+    }
+
+    static func testFocusGuardDisabledNeverPrompts() throws {
+        let startedAt = Date(timeIntervalSince1970: 10_000)
+        let session = makeFocusGuardSession(startedAt: startedAt, durationMinutes: 30)
+        let events = [
+            makeYouTubeDriftEvent(at: startedAt.addingTimeInterval(5 * 60)),
+        ]
+
+        let decision = FocusGuardEvaluator.evaluate(
+            goal: "ship the settings migration",
+            session: session,
+            events: events,
+            settings: FocusGuardSettings(enabled: false),
+            state: FocusGuardRuntimeState(offTrackStartedAt: startedAt.addingTimeInterval(5 * 60)),
+            now: startedAt.addingTimeInterval(8 * 60),
+            isUserIdle: false
+        )
+
+        try require(!decision.shouldPrompt, "expected disabled focus guard to avoid prompts")
+    }
+
+    static func makeFocusGuardSession(startedAt: Date, durationMinutes: Int) -> FocusSession {
+        FocusSession(
+            id: UUID().uuidString,
+            title: "ship the settings migration",
+            durationMinutes: durationMinutes,
+            startedAt: startedAt,
+            endsAt: startedAt.addingTimeInterval(TimeInterval(durationMinutes * 60))
+        )
+    }
+
+    static func makeYouTubeDriftEvent(at occurredAt: Date) -> ActivityEvent {
+        ActivityEvent(
+            occurredAt: occurredAt,
+            source: .browser,
+            kind: .tabFocused,
+            appName: "Google Chrome",
+            bundleID: "com.google.Chrome",
+            resourceTitle: "YouTube Shorts",
+            resourceURL: "https://www.youtube.com/shorts/abc123",
+            domain: "youtube.com"
+        )
+    }
+
+    static func makeGitHubSupportEvent(at occurredAt: Date) -> ActivityEvent {
+        ActivityEvent(
+            occurredAt: occurredAt,
+            source: .browser,
+            kind: .tabFocused,
+            appName: "Google Chrome",
+            bundleID: "com.google.Chrome",
+            resourceTitle: "openai/logbook pull request",
+            resourceURL: "https://github.com/openai/logbook/pull/42",
+            domain: "github.com"
+        )
     }
 
     static func makeTemporaryStore() -> SessionStore {

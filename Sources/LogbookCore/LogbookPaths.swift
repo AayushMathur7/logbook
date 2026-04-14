@@ -21,6 +21,10 @@ public enum LogbookPaths {
     public static var shellInboxURL: URL {
         appSupportDirectory.appendingPathComponent("inbox/terminal.tsv")
     }
+
+    public static var reviewDebugLogURL: URL {
+        appSupportDirectory.appendingPathComponent("review-debug.log")
+    }
     
     private static func migrateLegacyDirectoryIfNeeded(from legacyDirectory: URL, to directory: URL) {
         guard FileManager.default.fileExists(atPath: legacyDirectory.path) else {

@@ -140,7 +140,7 @@ public enum AttentionDeriver {
         if segment.category == .media && domain != "youtube.com" && domain != "youtu.be" {
             return true
         }
-        if segment.appName == "Log Book" && primary.contains("break") {
+        if segment.appName == "LogBook" && primary.contains("break") {
             return true
         }
         return false
@@ -153,7 +153,7 @@ public enum AttentionDeriver {
         if app.contains("spotify") || app.contains("music") || segment.category == .media {
             return .audio
         }
-        if segment.appName == "Log Book" && primary.contains("break") {
+        if segment.appName == "LogBook" && primary.contains("break") {
             return .note
         }
         if segment.category == .admin {

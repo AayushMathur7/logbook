@@ -27,7 +27,6 @@ struct ContentView: View {
     @State private var activeSheet: ActiveSheet?
     @State private var activePane: MainPane = .session
     @State private var sessionGoalDraft = ""
-    @State private var showLiveActivity = false
     @State private var sessionPaneStateBeforeHistory: SessionScreenState?
 
     var body: some View {
@@ -55,6 +54,10 @@ struct ContentView: View {
         }
         .onChange(of: model.surfaceState) { _ in
             syncSessionGoalDraftFromModel()
+        }
+        .onChange(of: model.settingsSheetRequestID) { requestID in
+            guard requestID > 0 else { return }
+            activeSheet = .settings
         }
     }
 
@@ -143,6 +146,8 @@ struct ContentView: View {
             case .reviewReady:
                 if let review = model.lastSessionReview {
                     centeredPrimaryContent(reviewDetail(review: review, sessionID: model.latestSessionID, allowRetry: true, allowNextSession: true))
+                } else if let reviewError = model.lastReviewErrorMessage, !reviewError.isEmpty {
+                    centeredPrimaryContent(reviewErrorView(message: reviewError))
                 } else {
                     centeredPrimaryContent(setupView)
                 }
@@ -231,11 +236,14 @@ struct ContentView: View {
 
                 if let errorMessage = model.errorMessage, !errorMessage.isEmpty {
                     InlineMessage(text: errorMessage, tint: LogbookStyle.warning)
-                } else if model.permissionOnboardingItems.contains(where: { !$0.isSatisfied }) {
-                    InlineMessage(
-                        text: "Some permissions are still missing. Log Book will still work, but capture will be less detailed. Configure them in Settings.",
-                        tint: LogbookStyle.caution
-                    )
+                }
+
+                if !model.localReviewConfigured {
+                    InlineMessage(text: model.localReviewSetupSummary, tint: LogbookStyle.caution)
+                }
+
+                if let accessibilitySummary = model.accessibilitySetupSummary {
+                    InlineMessage(text: accessibilitySummary, tint: LogbookStyle.caution)
                 }
 
                 Button {
@@ -248,35 +256,42 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!sessionGoalIsValid)
+
+                if !model.localReviewConfigured {
+                    Button {
+                        activeSheet = .settings
+                    } label: {
+                        Label("Set up local review", systemImage: "gearshape.fill")
+                            .font(.system(size: 12, weight: .medium))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.bordered)
+                }
             }
         }
         .padding(.horizontal, 12)
     }
 
     private func runningView(session: FocusSession) -> some View {
-        VStack(alignment: .center, spacing: 18) {
+        VStack(alignment: .center, spacing: 22) {
             Text(session.title)
                 .font(.system(size: 25, weight: .semibold, design: .serif))
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 520)
 
-            VStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .center, spacing: 6) {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Text(remainingLabel(session: session, now: context.date))
-                        .font(.system(size: 50, weight: .semibold, design: .rounded))
+                        .font(.system(size: 64, weight: .semibold, design: .rounded))
                         .contentTransition(.numericText())
                 }
-                Text(ActivityFormatting.sessionTime.string(from: session.startedAt, to: session.endsAt))
-                    .font(.system(size: 12))
-                    .foregroundStyle(LogbookStyle.subtleText)
             }
             .frame(maxWidth: .infinity)
 
             openAIActionButton("End session", systemImage: "stop.fill") {
                 model.endSessionNow()
             }
-
-            liveActivityPanel(session: session)
         }
         .frame(maxWidth: 540)
         .padding(.horizontal, 12)
@@ -317,7 +332,7 @@ struct ContentView: View {
                     .foregroundStyle(LogbookStyle.subtleText)
             } else {
                 HStack(alignment: .top, spacing: 16) {
-                    ScrollView {
+                    FadingEdgeScrollView {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(model.historySessions) { session in
                                 Button {
@@ -381,7 +396,7 @@ struct ContentView: View {
 
                 if allowNextSession {
                     HStack(spacing: 8) {
-                        chromeActionButton("Next", systemImage: "arrow.right") {
+                        primaryReviewActionButton("Start another", systemImage: "arrow.right") {
                             model.startNextSession()
                         }
 
@@ -415,21 +430,22 @@ struct ContentView: View {
                 .font(.system(size: 24, weight: .semibold, design: .serif))
                 .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 12) {
-                RichReviewText(
-                    spans: review.summarySpans,
-                    fallbackMarkdown: review.summary,
+            VStack(alignment: .leading, spacing: 16) {
+                MarkdownText(
+                    emphasizedReviewMarkdown(review.summary),
                     font: .system(size: 13),
                     color: LogbookStyle.subtleText,
-                    entityStyle: .inlineChip
+                    useAttributedLayout: true
                 )
 
-                if let takeaway = review.focusAssessment?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   !takeaway.isEmpty {
-                    Text(takeaway)
-                        .font(.system(size: 13))
-                        .foregroundStyle(LogbookStyle.subtleText)
-                        .fixedSize(horizontal: false, vertical: true)
+                if let insight = review.focusAssessment?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !insight.isEmpty {
+                    MarkdownText(
+                        emphasizedReviewMarkdown(insight),
+                        font: .system(size: 13),
+                        color: LogbookStyle.subtleText,
+                        useAttributedLayout: true
+                    )
                 }
 
                 if let sessionID {
@@ -437,6 +453,108 @@ struct ContentView: View {
                         .padding(.top, 2)
                 }
             }
+        }
+        .padding(.horizontal, 12)
+    }
+
+    private func emphasizedReviewMarkdown(_ value: String) -> String {
+        var result = softWrapReviewText(value)
+
+        result = result.replacingOccurrences(
+            of: #"(?<![=\w])(\d{1,3}%)(?!\w)"#,
+            with: "==$1==",
+            options: .regularExpression
+        )
+
+        result = result.replacingOccurrences(
+            of: #"(?<![\w])(\d+\s*(?:minutes?|minute|mins?|min|seconds?|second|secs?|sec|s))(?![\w])"#,
+            with: "==$1==",
+            options: .regularExpression
+        )
+
+        result = result.replacingOccurrences(
+            of: #"(?<![\w])(\d+\s+of\s+\d+\s+minutes?)(?![\w])"#,
+            with: "==$1==",
+            options: .regularExpression
+        )
+
+        result = result.replacingOccurrences(
+            of: #""([^"\n]{4,80})""#,
+            with: "\"*$1*\"",
+            options: .regularExpression
+        )
+
+        let labels = ReviewEntityRegistry.promptEntities()
+            .map(\.label)
+            .sorted { lhs, rhs in
+                if lhs.count == rhs.count {
+                    return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+                }
+                return lhs.count > rhs.count
+            }
+
+        for label in labels {
+            let escaped = NSRegularExpression.escapedPattern(for: label)
+            let pattern: String
+            if label.lowercased() == "x" {
+                pattern = #"(?<![=\w])\#(escaped)(?![=\w])"#
+            } else {
+                pattern = #"(?<!==)(?<![\w])\#(escaped)(?![\w])(?!==)"#
+            }
+
+            result = result.replacingOccurrences(
+                of: pattern,
+                with: "==\(label)==",
+                options: [.regularExpression, .caseInsensitive]
+            )
+        }
+
+        return result
+    }
+
+    private func softWrapReviewText(_ value: String) -> String {
+        var result = value
+        let zeroWidthSpace = "\u{200B}"
+
+        result = result.replacingOccurrences(
+            of: #"(@[A-Za-z0-9_]{10})([A-Za-z0-9_]+)"#,
+            with: "$1\(zeroWidthSpace)$2",
+            options: .regularExpression
+        )
+
+        result = result.replacingOccurrences(
+            of: #"([A-Za-z0-9]{14})([A-Za-z0-9]{6,})"#,
+            with: "$1\(zeroWidthSpace)$2",
+            options: .regularExpression
+        )
+
+        return result
+    }
+
+    private func reviewErrorView(message: String) -> some View {
+        VStack(alignment: .leading, spacing: 24) {
+            HStack(alignment: .center) {
+                Spacer()
+
+                HStack(spacing: 8) {
+                    primaryReviewActionButton("Start another", systemImage: "arrow.right") {
+                        model.startNextSession()
+                    }
+
+                    chromeActionButton("Retry", systemImage: "arrow.clockwise") {
+                        model.retryLastReview()
+                    }
+                }
+            }
+
+            Text("Review failed")
+                .font(.system(size: 24, weight: .semibold, design: .serif))
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(message)
+                .font(.system(size: 13))
+                .foregroundStyle(LogbookStyle.subtleText)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 12)
     }
@@ -468,7 +586,19 @@ struct ContentView: View {
                     }
                 }
             }
-            if let summary = detail.session.summary {
+            if let statusMessage = historyStatusMessage(for: detail.session.reviewStatus) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(historyStatusTitle(for: detail.session.reviewStatus))
+                        .font(.system(size: 24, weight: .semibold, design: .serif))
+                        .foregroundStyle(LogbookStyle.text)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text(statusMessage)
+                        .font(.system(size: 13))
+                        .foregroundStyle(LogbookStyle.subtleText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if let summary = detail.session.summary {
                 Text(summary)
                     .font(.system(size: 24, weight: .semibold, design: .serif))
                     .foregroundStyle(LogbookStyle.text)
@@ -481,6 +611,32 @@ struct ContentView: View {
             }
         }
         .padding(.horizontal, 12)
+    }
+
+    private func historyStatusTitle(for status: ReviewStatus) -> String {
+        switch status {
+        case .pending:
+            return "Review pending"
+        case .unavailable:
+            return "Review unavailable"
+        case .failed:
+            return "Review failed"
+        case .none, .ready:
+            return ""
+        }
+    }
+
+    private func historyStatusMessage(for status: ReviewStatus) -> String? {
+        switch status {
+        case .pending:
+            return "This session finished, but the review has not been saved yet."
+        case .unavailable:
+            return "No local model was available for this session, so LogBook could not generate a review."
+        case .failed:
+            return "The model did not return a usable review for this session. Retry it after checking your Ollama setup or model output."
+        case .none, .ready:
+            return nil
+        }
     }
 
     private func historySessionStamp(startedAt: Date, endedAt: Date) -> String {
@@ -517,6 +673,24 @@ struct ContentView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
                 .background(.ultraThinMaterial, in: Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(LogbookStyle.cardStroke, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func primaryReviewActionButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(
+                    Capsule()
+                        .fill(LogbookStyle.badgeFill)
+                )
                 .overlay(
                     Capsule()
                         .stroke(LogbookStyle.cardStroke, lineWidth: 1)
@@ -565,180 +739,6 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
-    @ViewBuilder
-    private func liveActivityPanel(session: FocusSession) -> some View {
-        let events = liveSessionEvents(for: session)
-
-        VStack(alignment: .leading, spacing: 10) {
-            Button {
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                    showLiveActivity.toggle()
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(LogbookStyle.subtleText)
-                        .rotationEffect(.degrees(showLiveActivity ? 90 : 0))
-                    Text("Activity being captured")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(LogbookStyle.text)
-                    Spacer()
-                    Text("\(model.activeSessionEventCount)")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(LogbookStyle.subtleText)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .animation(.spring(response: 0.28, dampingFraction: 0.82), value: showLiveActivity)
-
-            if showLiveActivity {
-                if events.isEmpty {
-                    Text("No live activity captured yet.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(LogbookStyle.subtleText)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(events) { event in
-                                liveActivityRow(event)
-                                    .transition(
-                                        .asymmetric(
-                                            insertion: .move(edge: .top).combined(with: .opacity),
-                                            removal: .opacity
-                                        )
-                                    )
-                            }
-                        }
-                    }
-                    .frame(maxHeight: 168)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-            }
-        }
-        .padding(.top, 4)
-        .animation(.spring(response: 0.3, dampingFraction: 0.84), value: showLiveActivity)
-        .animation(.spring(response: 0.3, dampingFraction: 0.84), value: events.map(\.id))
-    }
-
-    private func liveActivityRow(_ event: ActivityEvent) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(ActivityFormatting.shortTime.string(from: event.occurredAt))
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(LogbookStyle.subtleText)
-                .frame(width: 54, alignment: .leading)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(liveEventTitle(for: event))
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(LogbookStyle.text)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if let metadata = liveEventMetadata(for: event) {
-                    Text(metadata)
-                        .font(.system(size: 11))
-                        .foregroundStyle(LogbookStyle.subtleText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 2)
-    }
-
-    private func liveSessionEvents(for session: FocusSession) -> [ActivityEvent] {
-        Array(
-            model.allEvents
-            .filter { $0.occurredAt >= session.startedAt && $0.occurredAt <= Date() }
-            .suffix(18)
-            .reversed()
-        )
-    }
-
-    private func liveEventTitle(for event: ActivityEvent) -> String {
-        switch event.kind {
-        case .appActivated:
-            return "Switched to \(event.appName ?? "another app")"
-        case .appLaunched:
-            return "Opened \(event.appName ?? "an app")"
-        case .appTerminated:
-            return "Closed \(event.appName ?? "an app")"
-        case .windowChanged:
-            return event.windowTitle ?? event.resourceTitle ?? "Changed window"
-        case .tabFocused, .tabChanged:
-            return event.resourceTitle ?? event.windowTitle ?? "Changed browser tab"
-        case .commandStarted:
-            return event.command ?? "Started command"
-        case .commandFinished:
-            return event.command ?? "Finished command"
-        case .fileCreated:
-            return "Created \(event.path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "file")"
-        case .fileModified:
-            return "Edited \(event.path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "file")"
-        case .fileRenamed:
-            return "Renamed \(event.path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "file")"
-        case .fileDeleted:
-            return "Deleted \(event.path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "file")"
-        case .clipboardChanged:
-            return "Clipboard changed"
-        case .userIdle:
-            return "Went idle"
-        case .userResumed:
-            return "Returned"
-        case .systemWoke:
-            return "Mac woke up"
-        case .systemSlept:
-            return "Mac went to sleep"
-        case .capturePaused:
-            return "Capture paused"
-        case .captureResumed:
-            return "Capture resumed"
-        case .noteAdded:
-            return event.noteText ?? "Added note"
-        case .sessionPinned:
-            return "Pinned session"
-        }
-    }
-
-    private func liveEventMetadata(for event: ActivityEvent) -> String? {
-        var parts: [String] = []
-
-        if let app = event.appName, !app.isEmpty {
-            parts.append(app)
-        }
-
-        if let domain = event.domain, !domain.isEmpty {
-            parts.append(domain)
-        } else if let url = event.resourceURL, let host = URL(string: url)?.host(), !host.isEmpty {
-            parts.append(host)
-        }
-
-        if let path = event.path, !path.isEmpty {
-            parts.append(URL(fileURLWithPath: path).lastPathComponent)
-        }
-
-        if let title = event.resourceTitle,
-           !title.isEmpty,
-           title != event.windowTitle {
-            parts.append(title)
-        }
-
-        if let preview = event.clipboardPreview,
-           !preview.isEmpty {
-            parts.append(String(preview.prefix(72)))
-        }
-
-        if let directory = event.workingDirectory,
-           !directory.isEmpty {
-            parts.append(URL(fileURLWithPath: directory).lastPathComponent)
-        }
-
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
     private func syncSessionGoalDraftFromModel() {
         guard model.surfaceState == .setup else { return }
         if sessionGoalDraft.isEmpty {
@@ -770,21 +770,6 @@ struct ContentView: View {
             content()
         }
     }
-    private func bullet(text: String, spans: [SessionReviewInlineSpan] = []) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(Color.secondary)
-                .frame(width: 5, height: 5)
-                .padding(.top, 7)
-            RichReviewText(
-                spans: spans,
-                fallbackMarkdown: text,
-                font: .system(size: 13),
-                color: LogbookStyle.subtleText
-            )
-        }
-    }
-
     private func timelinePhases(from segments: [TimelineSegment]) -> [TimelinePhase] {
         guard !segments.isEmpty else { return [] }
 
@@ -937,7 +922,7 @@ struct ContentView: View {
         let domain = (segment.domain ?? "").lowercased()
         let app = segment.appName.lowercased()
 
-        if segment.appName == "Log Book" && primary.contains("break") {
+        if segment.appName == "LogBook" && primary.contains("break") {
             return .breakState
         }
         if primary.contains("new tab") || secondary.contains("new tab") {
@@ -1041,10 +1026,10 @@ struct ContentView: View {
             }
             return "Drift"
         case .breakState:
-            if let note = group.first(where: { $0.appName == "Log Book" })?.primaryLabel.lowercased(), note.contains("1 min") || note.contains("1-minute") || note.contains("1 minute") {
+            if let note = group.first(where: { $0.appName == "LogBook" })?.primaryLabel.lowercased(), note.contains("1 min") || note.contains("1-minute") || note.contains("1 minute") {
                 return "Took a 1-minute break"
             }
-            if group.first(where: { $0.appName == "Log Book" })?.primaryLabel != nil {
+            if group.first(where: { $0.appName == "LogBook" })?.primaryLabel != nil {
                 return "Took a break"
             }
             return "Pause"
@@ -1092,7 +1077,7 @@ struct ContentView: View {
         if group.reduce(0, { $0 + $1.eventCount }) > 1 {
             parts.append("\(group.reduce(0, { $0 + $1.eventCount })) events")
         }
-        if style == .breakState, let note = group.first(where: { $0.appName == "Log Book" })?.primaryLabel {
+        if style == .breakState, let note = group.first(where: { $0.appName == "LogBook" })?.primaryLabel {
             parts.append("note: \(note)")
         }
 
@@ -1292,6 +1277,75 @@ private struct LearningIconButton: View {
     }
 }
 
+private struct FadingEdgeScrollView<Content: View>: View {
+    let content: Content
+    private let coordinateSpaceName = "history-list-scroll"
+    private let fadeHeight: CGFloat = 34
+    private let fadeThreshold: CGFloat = 4
+
+    @State private var contentFrame: CGRect = .zero
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        GeometryReader { viewportProxy in
+            ScrollView {
+                content
+                    .background(
+                        GeometryReader { proxy in
+                            Color.clear
+                                .preference(
+                                    key: HistoryScrollContentFramePreferenceKey.self,
+                                    value: proxy.frame(in: .named(coordinateSpaceName))
+                                )
+                        }
+                    )
+            }
+            .coordinateSpace(name: coordinateSpaceName)
+            .scrollIndicators(.hidden)
+            .overlay(alignment: .top) {
+                edgeFade(direction: .top, isVisible: showsTopFade)
+            }
+            .overlay(alignment: .bottom) {
+                edgeFade(direction: .bottom, isVisible: showsBottomFade(viewportHeight: viewportProxy.size.height))
+            }
+            .onPreferenceChange(HistoryScrollContentFramePreferenceKey.self) { contentFrame = $0 }
+        }
+    }
+
+    private var showsTopFade: Bool {
+        contentFrame.minY < -fadeThreshold
+    }
+
+    private func showsBottomFade(viewportHeight: CGFloat) -> Bool {
+        contentFrame.maxY > viewportHeight + fadeThreshold
+    }
+
+    @ViewBuilder
+    private func edgeFade(direction: VerticalEdge, isVisible: Bool) -> some View {
+        LinearGradient(
+            colors: direction == .top
+                ? [LogbookStyle.canvasTop, LogbookStyle.canvasTop.opacity(0.94), LogbookStyle.canvasTop.opacity(0)]
+                : [LogbookStyle.canvasBottom.opacity(0), LogbookStyle.canvasBottom.opacity(0.94), LogbookStyle.canvasBottom],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .frame(height: fadeHeight)
+        .opacity(isVisible ? 1 : 0)
+        .allowsHitTesting(false)
+    }
+}
+
+private struct HistoryScrollContentFramePreferenceKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
+    }
+}
+
 private struct SettingsSheet: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -1313,13 +1367,18 @@ private struct SettingsSheet: View {
                 }
 
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 20) {
                         settingsSection("Local model") {
+                            Text("A local model is optional at first. If no model is ready, LogBook still saves the session, but AI review generation will not run.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(LogbookStyle.subtleText)
+                                .fixedSize(horizontal: false, vertical: true)
+
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Model")
                                     .font(.system(size: 12, weight: .medium))
                                 if model.availableOllamaModels.isEmpty {
-                                    settingsTextField(title: "No local models detected", text: $model.ollamaModelName)
+                                    settingsTextField(title: "Model name (optional)", text: $model.ollamaModelName)
                                 } else {
                                     Menu {
                                         ForEach(model.availableOllamaModels) { detectedModel in
@@ -1357,6 +1416,28 @@ private struct SettingsSheet: View {
                         }
 
                         settingsSection("Capture") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Nudges")
+                                    .font(.system(size: 12, weight: .medium))
+                                Text("Send a quiet notification when LogBook sees clear drift during a session.")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(LogbookStyle.subtleText)
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                captureToggleRow(
+                                    title: "Enable nudges",
+                                    detail: "Uses the default cadence: waits a bit at the start, stays quiet unless drift looks clear, and sends only occasional recovery nudges.",
+                                    isOn: Binding(
+                                        get: { model.focusGuardEnabled },
+                                        set: { model.setNudgesEnabled($0) }
+                                    )
+                                )
+
+                                Text("Nudges use only local session signals and stay conservative when the evidence is mixed.")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(LogbookStyle.subtleText)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                             captureToggleRow(
                                 title: "Window titles",
                                 detail: "Capture editor titles, browser page titles, and active document names when macOS allows it.",
@@ -1379,7 +1460,7 @@ private struct SettingsSheet: View {
                             )
                             captureToggleRow(
                                 title: "File activity",
-                                detail: "Capture file changes under the watched paths that Log Book observes.",
+                                detail: "Capture file changes under the watched paths that LogBook observes.",
                                 isOn: $model.trackFileSystemActivity
                             )
                             captureToggleRow(
@@ -1392,11 +1473,6 @@ private struct SettingsSheet: View {
                                 detail: "Capture idle, resume, wake, and sleep signals to explain pauses in the block.",
                                 isOn: $model.trackPresence
                             )
-                            captureToggleRow(
-                                title: "Calendar context",
-                                detail: "Capture nearby event titles so meetings can explain context switches.",
-                                isOn: $model.trackCalendarContext
-                            )
 
                             HStack(spacing: 8) {
                                 Text("Retention")
@@ -1405,19 +1481,21 @@ private struct SettingsSheet: View {
                                 settingsTextField(title: "Days", text: $model.rawEventRetentionDaysInput)
                                     .frame(width: 80)
                             }
+
+                            Text("Nudges use only local session signals and keep the cadence internal so the product stays simple.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(LogbookStyle.subtleText)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
 
                         settingsSection("Permissions") {
-                            permissionRow(title: "Accessibility", subtitle: model.accessibilityTrusted ? "Enabled" : "Needed for window titles and richer context") {
+                            permissionRow(title: "Accessibility", subtitle: model.accessibilityTrusted ? "Enabled" : "Optional, but recommended for window titles and richer context") {
                                 model.requestAccessibilityAccess()
-                            }
-                            permissionRow(title: "Calendar", subtitle: model.calendarAccessDescription) {
-                                model.requestCalendarAccess()
                             }
                         }
 
                         settingsSection("Privacy") {
-                            Text("Log Book stays local. It captures app, title, browser, shell, file, clipboard preview, presence, and calendar context only when those sources are enabled. It does not capture screenshots, OCR, audio, camera, microphone, or keystrokes.")
+                            Text("LogBook stays local. It captures app, title, browser, shell, file, clipboard preview, and presence signals only when those sources are enabled. It does not capture screenshots, OCR, audio, camera, microphone, or keystrokes.")
                                 .font(.system(size: 11))
                                 .foregroundStyle(LogbookStyle.subtleText)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -1442,10 +1520,10 @@ private struct SettingsSheet: View {
                             InlineMessage(text: errorMessage, tint: LogbookStyle.warning)
                         }
                     }
-                    .padding(.bottom, 6)
+                    .padding(.bottom, 12)
                 }
             }
-            .padding(12)
+            .padding(16)
         }
         .frame(width: 480, height: 420)
         .background(LogbookStyle.canvasBottom)
@@ -1457,15 +1535,16 @@ private struct SettingsSheet: View {
 
     @ViewBuilder
     private func settingsSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(title)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(LogbookStyle.subtleText)
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 14) {
                 content()
             }
             Divider()
                 .overlay(LogbookStyle.cardStroke.opacity(0.75))
+                .padding(.top, 2)
         }
     }
 

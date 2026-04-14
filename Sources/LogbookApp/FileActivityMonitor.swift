@@ -89,6 +89,10 @@ final class FileActivityMonitor {
     }
 
     private func handle(path: String, flags: FSEventStreamEventFlags) {
+        guard !PathNoiseFilter.shouldIgnoreFileActivity(path: path) else {
+            return
+        }
+
         let kinds = kinds(for: flags)
         guard !kinds.isEmpty else {
             return

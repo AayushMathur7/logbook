@@ -217,7 +217,8 @@ struct TruncatedMarkdownText: View {
             markdown: markdown,
             font: font,
             color: color,
-            codePointSize: codePointSize
+            codePointSize: codePointSize,
+            inferBadges: false
         )
         .frame(maxHeight: maxHeight, alignment: .topLeading)
         .clipped()

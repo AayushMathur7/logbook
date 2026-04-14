@@ -262,7 +262,7 @@ public enum TimelineDeriver {
         }
         if let note = event.noteText?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
             return EventDescriptor(
-                appName: event.appName ?? "Log Book",
+                appName: event.appName ?? "LogBook",
                 category: .admin,
                 entity: DerivedEntity(kind: .note, primaryLabel: note, confidence: 1.0)
             )
@@ -304,7 +304,7 @@ public enum TimelineDeriver {
         case .system:
             return "System"
         case .manual:
-            return "Log Book"
+            return "LogBook"
         default:
             return "Activity"
         }
@@ -1077,7 +1077,7 @@ private func objectBlob(for segment: TimelineSegment) -> [String] {
 }
 
 private func isBreakSegment(_ segment: TimelineSegment) -> Bool {
-    segment.appName == "Log Book" && segment.primaryLabel.lowercased().contains("break")
+    segment.appName == "LogBook" && segment.primaryLabel.lowercased().contains("break")
 }
 
 private func derivedRepoName(fromPath path: String) -> String? {

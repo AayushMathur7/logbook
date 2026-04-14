@@ -20,6 +20,8 @@ public struct OllamaConfiguration: Codable, Hashable {
 }
 
 public struct CaptureSettings: Codable, Hashable {
+    public var focusGuardEnabled: Bool
+    public var focusGuardPreset: FocusGuardPreset
     public var trackAccessibilityTitles: Bool
     public var trackBrowserContext: Bool
     public var trackFinderContext: Bool
@@ -39,6 +41,8 @@ public struct CaptureSettings: Codable, Hashable {
     public var ollama: OllamaConfiguration
 
     public init(
+        focusGuardEnabled: Bool = true,
+        focusGuardPreset: FocusGuardPreset? = nil,
         trackAccessibilityTitles: Bool = true,
         trackBrowserContext: Bool = true,
         trackFinderContext: Bool = true,
@@ -46,7 +50,7 @@ public struct CaptureSettings: Codable, Hashable {
         trackFileSystemActivity: Bool = true,
         trackClipboard: Bool = true,
         trackPresence: Bool = true,
-        trackCalendarContext: Bool = true,
+        trackCalendarContext: Bool = false,
         fileWatchRoots: [String] = [],
         excludedAppBundleIDs: [String] = [],
         excludedDomains: [String] = [],
@@ -57,6 +61,9 @@ public struct CaptureSettings: Codable, Hashable {
         rawEventRetentionDays: Int = 30,
         ollama: OllamaConfiguration = OllamaConfiguration()
     ) {
+        let resolvedFocusGuardPreset = focusGuardPreset ?? (focusGuardEnabled ? .balanced : .off)
+        self.focusGuardEnabled = resolvedFocusGuardPreset != .off
+        self.focusGuardPreset = resolvedFocusGuardPreset
         self.trackAccessibilityTitles = trackAccessibilityTitles
         self.trackBrowserContext = trackBrowserContext
         self.trackFinderContext = trackFinderContext
@@ -77,6 +84,52 @@ public struct CaptureSettings: Codable, Hashable {
     }
 
     public static let `default` = CaptureSettings()
+
+    enum CodingKeys: String, CodingKey {
+        case focusGuardEnabled
+        case focusGuardPreset
+        case trackAccessibilityTitles
+        case trackBrowserContext
+        case trackFinderContext
+        case trackShellCommands
+        case trackFileSystemActivity
+        case trackClipboard
+        case trackPresence
+        case trackCalendarContext
+        case fileWatchRoots
+        case excludedAppBundleIDs
+        case excludedDomains
+        case excludedPathPrefixes
+        case redactedTitleBundleIDs
+        case droppedShellDirectoryPrefixes
+        case summaryOnlyDomains
+        case rawEventRetentionDays
+        case ollama
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let legacyEnabled = try container.decodeIfPresent(Bool.self, forKey: .focusGuardEnabled) ?? true
+        focusGuardPreset = try container.decodeIfPresent(FocusGuardPreset.self, forKey: .focusGuardPreset) ?? (legacyEnabled ? .balanced : .off)
+        focusGuardEnabled = focusGuardPreset != .off
+        trackAccessibilityTitles = try container.decodeIfPresent(Bool.self, forKey: .trackAccessibilityTitles) ?? true
+        trackBrowserContext = try container.decodeIfPresent(Bool.self, forKey: .trackBrowserContext) ?? true
+        trackFinderContext = try container.decodeIfPresent(Bool.self, forKey: .trackFinderContext) ?? true
+        trackShellCommands = try container.decodeIfPresent(Bool.self, forKey: .trackShellCommands) ?? true
+        trackFileSystemActivity = try container.decodeIfPresent(Bool.self, forKey: .trackFileSystemActivity) ?? true
+        trackClipboard = try container.decodeIfPresent(Bool.self, forKey: .trackClipboard) ?? true
+        trackPresence = try container.decodeIfPresent(Bool.self, forKey: .trackPresence) ?? true
+        trackCalendarContext = try container.decodeIfPresent(Bool.self, forKey: .trackCalendarContext) ?? false
+        fileWatchRoots = try container.decodeIfPresent([String].self, forKey: .fileWatchRoots) ?? []
+        excludedAppBundleIDs = try container.decodeIfPresent([String].self, forKey: .excludedAppBundleIDs) ?? []
+        excludedDomains = try container.decodeIfPresent([String].self, forKey: .excludedDomains) ?? []
+        excludedPathPrefixes = try container.decodeIfPresent([String].self, forKey: .excludedPathPrefixes) ?? []
+        redactedTitleBundleIDs = try container.decodeIfPresent([String].self, forKey: .redactedTitleBundleIDs) ?? []
+        droppedShellDirectoryPrefixes = try container.decodeIfPresent([String].self, forKey: .droppedShellDirectoryPrefixes) ?? []
+        summaryOnlyDomains = try container.decodeIfPresent([String].self, forKey: .summaryOnlyDomains) ?? []
+        rawEventRetentionDays = try container.decodeIfPresent(Int.self, forKey: .rawEventRetentionDays) ?? 30
+        ollama = try container.decodeIfPresent(OllamaConfiguration.self, forKey: .ollama) ?? OllamaConfiguration()
+    }
 }
 public enum PrivacyFilter {
     public static func apply(to event: ActivityEvent, settings: CaptureSettings) -> ActivityEvent? {

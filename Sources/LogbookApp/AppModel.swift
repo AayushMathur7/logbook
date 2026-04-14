@@ -1,6 +1,5 @@
 import AppKit
 import Combine
-import EventKit
 import Foundation
 import LogbookCore
 
@@ -13,7 +12,6 @@ enum SessionScreenState: String, Equatable {
 
 enum PermissionOnboardingKind: String, Identifiable {
     case accessibility
-    case calendar
 
     var id: String { rawValue }
 }
@@ -44,7 +42,8 @@ final class AppModel: ObservableObject {
     @Published var trackFileSystemActivity = true
     @Published var trackClipboard = true
     @Published var trackPresence = true
-    @Published var trackCalendarContext = true
+    @Published var focusGuardEnabled = true
+    @Published var focusGuardPreset: FocusGuardPreset = .balanced
     @Published var fileWatchRootsInput = ""
     @Published var excludedAppBundleIDsInput = ""
     @Published var excludedDomainsInput = ""
@@ -66,8 +65,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var lastReviewErrorMessage: String?
     @Published private(set) var surfaceState: SessionScreenState = .setup
     @Published private(set) var accessibilityTrustedState: Bool
-    @Published private(set) var calendarAuthorizationStatus: EKAuthorizationStatus
-    @Published private(set) var calendarEvents: [CalendarEventSummary] = []
     @Published private(set) var availableOllamaModels: [OllamaModel] = []
     @Published private(set) var ollamaStatusMessage = ""
     @Published private(set) var ollamaStatusIsError = false
@@ -77,12 +74,16 @@ final class AppModel: ObservableObject {
     @Published private(set) var reviewInFlightSessionID: String?
     @Published private(set) var latestSessionID: String?
     @Published var showPermissionOnboarding = true
+    @Published private(set) var focusGuardSettings = FocusGuardSettings()
+    @Published private(set) var focusGuardAssessment = FocusGuardAssessment.empty
+    @Published private(set) var activeFocusGuardPrompt: FocusGuardPrompt?
+    @Published private(set) var settingsSheetRequestID = 0
 
     private let monitor = ActivityMonitor()
     private let fileMonitor = FileActivityMonitor()
-    private let eventStore = EKEventStore()
     private let store = SessionStore()
     private let reviewProvider: any LocalReviewProvider = AIProviderBridge.ollama
+    private let focusGuardNotifications = FocusGuardNotificationCoordinator()
     private let reviewDisplayName: String?
     private var shellImportTimer: Timer?
     private var sessionTimer: Timer?
@@ -90,12 +91,14 @@ final class AppModel: ObservableObject {
     private var completedSessionContext: CompletedSessionContext?
     private let memoryEventLimit = 5_000
     private var notificationObservers: [NSObjectProtocol] = []
+    private let focusGuardEvaluationInterval: TimeInterval = 30
+    private var nextFocusGuardEvaluationAt: Date?
+    private var focusGuardRuntimeState = FocusGuardRuntimeState()
 
     init() {
         self.captureSettings = store.loadCaptureSettings()
         self.allEvents = store.recentEvents()
         self.accessibilityTrustedState = AccessibilityInspector.isTrusted(prompt: false)
-        self.calendarAuthorizationStatus = EKEventStore.authorizationStatus(for: .event)
         self.reviewDisplayName = Self.preferredReviewDisplayName()
         applyCaptureSettings(captureSettings)
         self.fileWatchRootsInput = Self.multilineList(from: captureSettings.fileWatchRoots)
@@ -110,6 +113,11 @@ final class AppModel: ObservableObject {
         self.ollamaTimeoutInput = String(captureSettings.ollama.timeoutSeconds)
         self.ollamaStoreDebugIO = captureSettings.ollama.storeDebugIO
         self.rawEventRetentionDaysInput = String(captureSettings.rawEventRetentionDays)
+        self.focusGuardNotifications.onAction = { [weak self] action, sessionID in
+            Task { @MainActor [weak self] in
+                self?.handleFocusGuardNotificationAction(action, sessionID: sessionID)
+            }
+        }
 
         monitor.onEvent = { [weak self] event in
             self?.append(event)
@@ -119,8 +127,6 @@ final class AppModel: ObservableObject {
                 self?.append(event)
             }
         }
-
-        refreshCalendarEventsIfAuthorized()
         refreshHistory()
         hydrateLatestSession()
         installPermissionObservers()
@@ -142,27 +148,18 @@ final class AppModel: ObservableObject {
         store.databasePath
     }
 
-    var sessionGoalIsValid: Bool {
-        !sessionDraftTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    private func assignErrorMessage(_ error: Error) {
+        let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowered = message.lowercased()
+        if lowered.contains("database is locked") || lowered.contains("database locked") || lowered.contains("database busy") {
+            errorMessage = nil
+            return
+        }
+        errorMessage = message.isEmpty ? nil : message
     }
 
-    var calendarAccessDescription: String {
-        guard trackCalendarContext else {
-            return "Calendar context is off for reviews."
-        }
-
-        switch calendarAuthorizationStatus {
-        case .notDetermined:
-            return "Calendar access is off. Enable it if you want nearby meetings in session evidence."
-        case .restricted, .denied:
-            return "Calendar access is denied. Enable it in System Settings to include nearby events."
-        case .authorized, .fullAccess:
-            return "Nearby calendar events can be included in reviews."
-        case .writeOnly:
-            return "Calendar access is write-only. Log Book needs read access for context."
-        @unknown default:
-            return "Calendar status is unknown."
-        }
+    var sessionGoalIsValid: Bool {
+        !sessionDraftTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var accessibilityAccessDescription: String {
@@ -175,6 +172,66 @@ final class AppModel: ObservableObject {
         }
 
         return "Enable Accessibility to capture active window titles and improve session evidence."
+    }
+
+    private var selectedOllamaModelName: String {
+        ollamaModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var localReviewConfigured: Bool {
+        let selected = selectedOllamaModelName
+        guard !selected.isEmpty else { return false }
+        return availableOllamaModels.contains(where: { $0.name == selected })
+    }
+
+    var hasRunningSession: Bool {
+        activeSession != nil
+    }
+
+    var menuBarSymbolName: String {
+        return "clock"
+    }
+
+    func sessionRemainingLabel(now: Date = Date()) -> String? {
+        guard let activeSession else { return nil }
+        let remaining = max(Int(activeSession.endsAt.timeIntervalSince(now)), 0)
+        let minutes = remaining / 60
+        let seconds = remaining % 60
+
+        if minutes >= 60 {
+            let hours = minutes / 60
+            let remainder = minutes % 60
+            return remainder == 0 ? "\(hours)h" : "\(hours)h \(remainder)m"
+        }
+
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    var localReviewSetupSummary: String {
+        let selected = selectedOllamaModelName
+
+        if localReviewConfigured {
+            return "Local AI review is ready with \(selected)."
+        }
+
+        if ollamaStatusIsError {
+            return "AI review is not ready yet."
+        }
+
+        if !selected.isEmpty {
+            return "The selected model is not installed locally."
+        }
+
+        if availableOllamaModels.isEmpty {
+            return "No local model is ready for AI review yet."
+        }
+
+        return "LogBook found local models. Pick one in Settings for AI review."
+    }
+
+    var accessibilitySetupSummary: String? {
+        guard trackAccessibilityTitles, !accessibilityTrusted else { return nil }
+        return "Accessibility is optional, but it helps LogBook capture window titles and makes reviews more specific."
     }
 
     var permissionOnboardingItems: [PermissionOnboardingItem] {
@@ -211,68 +268,7 @@ final class AppModel: ObservableObject {
             )
         }()
 
-        let calendarItem: PermissionOnboardingItem = {
-            guard trackCalendarContext else {
-                return PermissionOnboardingItem(
-                    kind: .calendar,
-                    title: "Calendar",
-                    status: "Disabled in Settings",
-                    detail: "Calendar context is off, so meetings will not appear in session evidence.",
-                    actionTitle: "Open settings",
-                    isSatisfied: true
-                )
-            }
-
-            switch calendarAuthorizationStatus {
-            case .authorized, .fullAccess:
-                return PermissionOnboardingItem(
-                    kind: .calendar,
-                    title: "Calendar",
-                    status: "Enabled",
-                    detail: "Nearby meetings can be used as lightweight session context.",
-                    actionTitle: "Review",
-                    isSatisfied: true
-                )
-            case .notDetermined:
-                return PermissionOnboardingItem(
-                    kind: .calendar,
-                    title: "Calendar",
-                    status: "Optional",
-                    detail: "Grant read access if you want nearby meetings included in reviews.",
-                    actionTitle: "Allow",
-                    isSatisfied: false
-                )
-            case .restricted, .denied:
-                return PermissionOnboardingItem(
-                    kind: .calendar,
-                    title: "Calendar",
-                    status: "Denied",
-                    detail: "Calendar access was denied. You can still use Log Book; this only removes meeting context.",
-                    actionTitle: "Open settings",
-                    isSatisfied: false
-                )
-            case .writeOnly:
-                return PermissionOnboardingItem(
-                    kind: .calendar,
-                    title: "Calendar",
-                    status: "Needs read access",
-                    detail: "Log Book needs read access to include nearby events in the session review.",
-                    actionTitle: "Open settings",
-                    isSatisfied: false
-                )
-            @unknown default:
-                return PermissionOnboardingItem(
-                    kind: .calendar,
-                    title: "Calendar",
-                    status: "Unknown",
-                    detail: "Calendar status could not be determined. The app still works without it.",
-                    actionTitle: "Review",
-                    isSatisfied: false
-                )
-            }
-        }()
-
-        return [accessibilityItem, calendarItem]
+        return [accessibilityItem]
     }
 
     var shouldShowPermissionOnboarding: Bool {
@@ -289,7 +285,7 @@ final class AppModel: ObservableObject {
             return "\(item.title) is the only missing piece. You can still start a session now."
         }
 
-        return "\(missing.count) permissions are still missing. Log Book will work, but the review will be less detailed."
+        return "\(missing.count) permissions are still missing. LogBook will work, but the review will be less detailed."
     }
 
     var enabledCaptureLabels: [String] {
@@ -301,7 +297,6 @@ final class AppModel: ObservableObject {
         if trackFileSystemActivity { labels.append("files") }
         if trackClipboard { labels.append("clipboard") }
         if trackPresence { labels.append("presence") }
-        if trackCalendarContext { labels.append("calendar") }
         return labels
     }
 
@@ -315,6 +310,10 @@ final class AppModel: ObservableObject {
         }
 
         return "Ready to capture \(enabledCaptureLabels.joined(separator: ", "))."
+    }
+
+    var focusGuardStatusText: String {
+        focusGuardAssessment.status.title
     }
 
     func start() {
@@ -342,7 +341,7 @@ final class AppModel: ObservableObject {
                 occurredAt: Date(),
                 source: .system,
                 kind: captureEnabled ? .captureResumed : .capturePaused,
-                appName: "Log Book"
+                appName: "LogBook"
             )
         )
 
@@ -358,41 +357,12 @@ final class AppModel: ObservableObject {
         refreshPermissionStatuses()
     }
 
-    func requestCalendarAccess() {
-        guard trackCalendarContext else { return }
-
-        if #available(macOS 14.0, *) {
-            eventStore.requestFullAccessToEvents { [weak self] _, _ in
-                Task { @MainActor [weak self] in
-                    self?.refreshPermissionStatuses()
-                }
-            }
-        } else {
-            eventStore.requestAccess(to: .event) { [weak self] _, _ in
-                Task { @MainActor [weak self] in
-                    self?.refreshPermissionStatuses()
-                }
-            }
-        }
-    }
-
     func performPermissionOnboardingAction(for kind: PermissionOnboardingKind) {
         switch kind {
         case .accessibility:
             if trackAccessibilityTitles, !accessibilityTrusted {
                 requestAccessibilityAccess()
             } else {
-                hidePermissionOnboarding()
-            }
-        case .calendar:
-            switch calendarAuthorizationStatus {
-            case .notDetermined:
-                requestCalendarAccess()
-            case .restricted, .denied, .writeOnly:
-                openSystemSettingsPrivacyPane(anchor: "Privacy_Calendars")
-            case .authorized, .fullAccess:
-                hidePermissionOnboarding()
-            @unknown default:
                 hidePermissionOnboarding()
             }
         }
@@ -410,18 +380,19 @@ final class AppModel: ObservableObject {
 
             let selectedModel = ollamaModelName.trimmingCharacters(in: .whitespacesAndNewlines)
             if models.isEmpty {
-                ollamaStatusMessage = "Connected to Ollama, but no local models are installed."
+                ollamaStatusMessage = "Connected to Ollama, but no local models are installed yet."
             } else if selectedModel.isEmpty {
-                ollamaStatusMessage = "Connected to Ollama. Select one of the \(models.count) detected models."
+                ollamaStatusMessage = "Connected to Ollama. Pick one of the \(models.count) detected models for AI review."
             } else if models.contains(where: { $0.name == selectedModel }) {
-                ollamaStatusMessage = "Connected to Ollama. Using \(selectedModel)."
+                ollamaStatusMessage = "Connected to Ollama. Using \(selectedModel) for AI review."
             } else {
                 ollamaStatusMessage = "Connected to Ollama, but \(selectedModel) is not installed locally."
                 ollamaStatusIsError = true
             }
         } catch {
             availableOllamaModels = []
-            ollamaStatusMessage = error.localizedDescription
+            let baseURL = currentOllamaConfiguration().baseURLString
+            ollamaStatusMessage = "Couldn’t reach Ollama at \(baseURL)."
             ollamaStatusIsError = true
         }
     }
@@ -446,7 +417,13 @@ final class AppModel: ObservableObject {
         quickNoteInput = ""
         lastReviewErrorMessage = nil
         surfaceState = .running
+        resetFocusGuardState()
         startSessionTimer()
+        if focusGuardPreset != .off {
+            Task { [focusGuardNotifications] in
+                _ = await focusGuardNotifications.requestAuthorizationIfNeeded()
+            }
+        }
     }
 
     func endSessionNow() {
@@ -457,6 +434,7 @@ final class AppModel: ObservableObject {
         surfaceState = .setup
         quickNoteInput = ""
         lastReviewErrorMessage = nil
+        resetFocusGuardState()
     }
 
     func retryLastReview() {
@@ -471,15 +449,15 @@ final class AppModel: ObservableObject {
         guard let detail = selectedHistoryDetail else { return }
         reviewInFlightSessionID = detail.session.id
         let events = store.events(between: detail.session.startedAt, and: detail.session.endedAt)
-        let calendarTitles = nearbyCalendarTitles(startedAt: detail.session.startedAt, endedAt: detail.session.endedAt)
+        let evidenceEvents = events.filter { !$0.kind.isFocusGuardSignal }
+        let segments = TimelineDeriver.deriveSegments(from: evidenceEvents, sessionEnd: detail.session.endedAt)
         let context = CompletedSessionContext(
             sessionID: detail.session.id,
             title: detail.session.goal,
             startedAt: detail.session.startedAt,
             endedAt: detail.session.endedAt,
             events: events,
-            calendarTitles: calendarTitles,
-            segments: detail.segments
+            segments: segments
         )
         performReview(for: context)
     }
@@ -493,7 +471,7 @@ final class AppModel: ObservableObject {
                 occurredAt: Date(),
                 source: .manual,
                 kind: .noteAdded,
-                appName: "Log Book",
+                appName: "LogBook",
                 noteText: trimmed,
                 relatedID: activeSession?.id
             )
@@ -509,7 +487,7 @@ final class AppModel: ObservableObject {
             refreshFileMonitorRoots()
             errorMessage = nil
         } catch {
-            errorMessage = error.localizedDescription
+            assignErrorMessage(error)
         }
     }
 
@@ -520,7 +498,7 @@ final class AppModel: ObservableObject {
             hydrateLatestSession()
             errorMessage = nil
         } catch {
-            errorMessage = error.localizedDescription
+            assignErrorMessage(error)
         }
     }
 
@@ -534,15 +512,18 @@ final class AppModel: ObservableObject {
             hydrateLatestSession()
             errorMessage = nil
         } catch {
-            errorMessage = error.localizedDescription
+            assignErrorMessage(error)
         }
     }
 
     func saveCaptureSettings() {
         let timeout = max(Int(ollamaTimeoutInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 90, 10)
         let retentionDays = max(Int(rawEventRetentionDaysInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 30, 1)
+        let resolvedFocusPreset: FocusGuardPreset = focusGuardEnabled ? .balanced : .off
 
         captureSettings = CaptureSettings(
+            focusGuardEnabled: resolvedFocusPreset != .off,
+            focusGuardPreset: resolvedFocusPreset,
             trackAccessibilityTitles: trackAccessibilityTitles,
             trackBrowserContext: trackBrowserContext,
             trackFinderContext: trackFinderContext,
@@ -550,7 +531,7 @@ final class AppModel: ObservableObject {
             trackFileSystemActivity: trackFileSystemActivity,
             trackClipboard: trackClipboard,
             trackPresence: trackPresence,
-            trackCalendarContext: trackCalendarContext,
+            trackCalendarContext: false,
             fileWatchRoots: Self.parseMultilineList(fileWatchRootsInput),
             excludedAppBundleIDs: Self.parseMultilineList(excludedAppBundleIDsInput),
             excludedDomains: Self.parseMultilineList(excludedDomainsInput),
@@ -572,14 +553,24 @@ final class AppModel: ObservableObject {
             try store.pruneRawEvents(olderThan: retentionDays)
             errorMessage = nil
         } catch {
-            errorMessage = error.localizedDescription
+            assignErrorMessage(error)
         }
 
         refreshFileMonitorRoots()
-        refreshCalendarEventsIfAuthorized()
+        focusGuardPreset = resolvedFocusPreset
+        focusGuardEnabled = resolvedFocusPreset != .off
+        focusGuardSettings = resolvedFocusPreset.settings
+        if resolvedFocusPreset == .off {
+            activeFocusGuardPrompt = nil
+        }
         Task { [weak self] in
             await self?.refreshAvailableModels()
         }
+    }
+
+    func setNudgesEnabled(_ enabled: Bool) {
+        focusGuardEnabled = enabled
+        focusGuardPreset = enabled ? .balanced : .off
     }
 
     private func currentOllamaConfiguration() -> OllamaConfiguration {
@@ -634,6 +625,10 @@ final class AppModel: ObservableObject {
         store.reviewFeedback(sessionID: sessionID)
     }
 
+    func requestSettingsSheet() {
+        settingsSheetRequestID += 1
+    }
+
     func saveReviewFeedback(sessionID: String, review: SessionReview, wasHelpful: Bool, note: String? = nil) {
         do {
             try store.saveReviewFeedback(
@@ -652,11 +647,15 @@ final class AppModel: ObservableObject {
                 await self?.refreshReviewLearningMemory()
             }
         } catch {
-            errorMessage = error.localizedDescription
+            assignErrorMessage(error)
         }
     }
 
     func restorePrimarySessionSurface(preferred state: SessionScreenState? = nil) {
+        func hasPrimaryReviewSurface() -> Bool {
+            lastSessionReview != nil || !(lastReviewErrorMessage?.isEmpty ?? true)
+        }
+
         if activeSession != nil {
             surfaceState = .running
             return
@@ -673,24 +672,26 @@ final class AppModel: ObservableObject {
                 return
             case .reviewReady:
                 hydrateLatestSession()
-                surfaceState = lastSessionReview == nil ? .setup : .reviewReady
+                surfaceState = hasPrimaryReviewSurface() ? .reviewReady : .setup
                 return
             case .running:
                 surfaceState = .setup
                 return
             case .generatingReview:
                 hydrateLatestSession()
-                surfaceState = lastSessionReview == nil ? .setup : .reviewReady
+                surfaceState = hasPrimaryReviewSurface() ? .reviewReady : .setup
                 return
             }
         }
 
         hydrateLatestSession()
-        surfaceState = lastSessionReview == nil ? .setup : .reviewReady
+        surfaceState = hasPrimaryReviewSurface() ? .reviewReady : .setup
     }
 
     private func applyCaptureSettings(_ settings: CaptureSettings) {
         captureEnabled = true
+        focusGuardPreset = settings.focusGuardPreset
+        focusGuardEnabled = settings.focusGuardPreset != .off
         trackAccessibilityTitles = settings.trackAccessibilityTitles
         trackBrowserContext = settings.trackBrowserContext
         trackFinderContext = settings.trackFinderContext
@@ -698,7 +699,7 @@ final class AppModel: ObservableObject {
         trackFileSystemActivity = settings.trackFileSystemActivity
         trackClipboard = settings.trackClipboard
         trackPresence = settings.trackPresence
-        trackCalendarContext = settings.trackCalendarContext
+        focusGuardSettings = settings.focusGuardPreset.settings
         refreshPermissionStatuses()
     }
 
@@ -717,15 +718,6 @@ final class AppModel: ObservableObject {
 
     private func refreshPermissionStatuses() {
         accessibilityTrustedState = AccessibilityInspector.isTrusted(prompt: false)
-        calendarAuthorizationStatus = EKEventStore.authorizationStatus(for: .event)
-        refreshCalendarEventsIfAuthorized()
-    }
-
-    private func openSystemSettingsPrivacyPane(anchor: String) {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") else {
-            return
-        }
-        NSWorkspace.shared.open(url)
     }
 
     private func startShellImport() {
@@ -745,6 +737,7 @@ final class AppModel: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, let activeSession = self.activeSession else { return }
                 self.activeSessionEventCount = self.eventCount(for: activeSession, endingAt: Date())
+                self.evaluateFocusGuardIfNeeded(now: Date(), session: activeSession)
                 if Date() >= activeSession.endsAt {
                     self.finishSession(endedAt: activeSession.endsAt)
                 }
@@ -779,39 +772,8 @@ final class AppModel: ObservableObject {
             }
             errorMessage = nil
         } catch {
-            errorMessage = error.localizedDescription
+            assignErrorMessage(error)
         }
-    }
-
-    private func refreshCalendarEventsIfAuthorized() {
-        guard hasCalendarAccess, trackCalendarContext else {
-            calendarEvents = []
-            return
-        }
-
-        let calendar = Calendar.current
-        let start = calendar.startOfDay(for: Date())
-        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(24 * 60 * 60)
-        let predicate = eventStore.predicateForEvents(withStart: start, end: end, calendars: nil)
-
-        calendarEvents = eventStore.events(matching: predicate)
-            .sorted { $0.startDate < $1.startDate }
-            .map {
-                CalendarEventSummary(
-                    id: $0.eventIdentifier ?? UUID().uuidString,
-                    title: $0.title?.isEmpty == false ? $0.title! : "Untitled Event",
-                    calendarTitle: $0.calendar.title,
-                    startAt: $0.startDate,
-                    endAt: $0.endDate
-                )
-            }
-    }
-
-    private var hasCalendarAccess: Bool {
-        if #available(macOS 14.0, *) {
-            return calendarAuthorizationStatus == .fullAccess || calendarAuthorizationStatus == .authorized
-        }
-        return calendarAuthorizationStatus == .authorized
     }
 
     private func refreshFileMonitorRoots() {
@@ -833,18 +795,19 @@ final class AppModel: ObservableObject {
         sessionTimer = nil
         self.activeSession = nil
         activeSessionEventCount = 0
+        activeFocusGuardPrompt = nil
+        nextFocusGuardEvaluationAt = nil
         surfaceState = .generatingReview
 
         let sessionEvents = store.events(between: activeSession.startedAt, and: endedAt)
-        let calendarTitles = nearbyCalendarTitles(startedAt: activeSession.startedAt, endedAt: endedAt)
-        let segments = TimelineDeriver.deriveSegments(from: sessionEvents, sessionEnd: endedAt)
+        let evidenceEvents = sessionEvents.filter { !$0.kind.isFocusGuardSignal }
+        let segments = TimelineDeriver.deriveSegments(from: evidenceEvents, sessionEnd: endedAt)
         let context = CompletedSessionContext(
             sessionID: activeSession.id,
             title: activeSession.title,
             startedAt: activeSession.startedAt,
             endedAt: endedAt,
             events: sessionEvents,
-            calendarTitles: calendarTitles,
             segments: segments
         )
         completedSessionContext = context
@@ -865,49 +828,37 @@ final class AppModel: ObservableObject {
     private func performReview(for context: CompletedSessionContext) {
         reviewInFlightSessionID = context.sessionID
         guard !context.events.isEmpty else {
-            lastReviewErrorMessage = "Not enough captured evidence to ask Ollama for a review."
-            let fallback = fallbackReview(
+            ReviewDebugLogger.logReviewFailure(
+                sessionTitle: context.title,
+                error: "Not enough captured evidence to ask Ollama for a review."
+            )
+            applyReviewFailure(
+                sessionID: context.sessionID,
                 title: context.title,
                 startedAt: context.startedAt,
                 endedAt: context.endedAt,
-                events: context.events,
-                calendarTitles: context.calendarTitles,
                 segments: context.segments,
-                headline: "No usable evidence for this block.",
-                summary: "The session ended before Log Book captured enough evidence to build a grounded timeline."
-            )
-            applyCompletedReview(
-                fallback,
-                sessionID: context.sessionID,
-                providerTitle: "Local fallback",
-                prompt: "",
-                rawResponse: "",
+                rawEventCount: context.events.count,
                 reviewStatus: .failed,
-                rawEventCount: context.events.count
+                message: "Not enough captured evidence to ask Ollama for a review."
             )
             return
         }
 
         guard !captureSettings.ollama.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            lastReviewErrorMessage = "No Ollama model is selected in Settings. Showing the local fallback review."
-            let fallback = fallbackReview(
+            ReviewDebugLogger.logReviewFailure(
+                sessionTitle: context.title,
+                error: "No Ollama model is selected for review generation."
+            )
+            applyReviewFailure(
+                sessionID: context.sessionID,
                 title: context.title,
                 startedAt: context.startedAt,
                 endedAt: context.endedAt,
-                events: context.events,
-                calendarTitles: context.calendarTitles,
                 segments: context.segments,
-                headline: "Timeline saved. No local model selected.",
-                summary: "Log Book captured the block and built the timeline, but no Ollama model is configured for an AI review."
-            )
-            applyCompletedReview(
-                fallback,
-                sessionID: context.sessionID,
-                providerTitle: "Local fallback",
-                prompt: "",
-                rawResponse: "",
+                rawEventCount: context.events.count,
                 reviewStatus: .unavailable,
-                rawEventCount: context.events.count
+                message: "No Ollama model is selected for review generation."
             )
             return
         }
@@ -923,12 +874,10 @@ final class AppModel: ObservableObject {
                     startedAt: context.startedAt,
                     endedAt: context.endedAt,
                     events: context.events,
-                    segments: context.segments,
-                    calendarTitles: context.calendarTitles
+                    segments: context.segments
                 )
-                let enriched = enrichSessionReview(run.review, events: context.events, calendarTitles: context.calendarTitles, segments: context.segments)
                 applyCompletedReview(
-                    enriched,
+                    enrichSessionReview(run.review, events: context.events, segments: context.segments),
                     sessionID: context.sessionID,
                     providerTitle: run.providerTitle,
                     prompt: captureSettings.ollama.storeDebugIO ? run.prompt : "",
@@ -937,27 +886,59 @@ final class AppModel: ObservableObject {
                     rawEventCount: context.events.count
                 )
             } catch {
-                let fallback = fallbackReview(
+                applyReviewFailure(
+                    sessionID: context.sessionID,
                     title: context.title,
                     startedAt: context.startedAt,
                     endedAt: context.endedAt,
-                    events: context.events,
-                    calendarTitles: context.calendarTitles,
                     segments: context.segments,
-                    headline: "Timeline saved. Local review failed.",
-                    summary: "The local model response could not be parsed cleanly, so this recap was rebuilt from the captured timeline."
-                )
-                applyCompletedReview(
-                    fallback,
-                    sessionID: context.sessionID,
-                    providerTitle: "Ollama",
-                    prompt: captureSettings.ollama.storeDebugIO ? "Review prompt failed." : "",
-                    rawResponse: captureSettings.ollama.storeDebugIO ? error.localizedDescription : "",
+                    rawEventCount: context.events.count,
                     reviewStatus: .failed,
-                    rawEventCount: context.events.count
+                    message: "AI generation failed.",
+                    prompt: captureSettings.ollama.storeDebugIO ? "Review prompt failed." : "",
+                    rawResponse: captureSettings.ollama.storeDebugIO ? error.localizedDescription : ""
                 )
-                lastReviewErrorMessage = error.localizedDescription
             }
+        }
+    }
+
+    private func applyReviewFailure(
+        sessionID: String,
+        title: String,
+        startedAt: Date,
+        endedAt: Date,
+        segments: [TimelineSegment],
+        rawEventCount: Int,
+        reviewStatus: ReviewStatus,
+        message: String,
+        prompt: String = "",
+        rawResponse: String = ""
+    ) {
+        reviewInFlightSessionID = nil
+        lastSessionReview = nil
+        lastSessionReviewProvider = ""
+        lastSessionReviewPrompt = prompt
+        lastSessionReviewRawResponse = rawResponse
+        lastReviewErrorMessage = message
+        surfaceState = .reviewReady
+        resetFocusGuardState()
+
+        let storedSession = StoredSession(
+            id: sessionID,
+            goal: title,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            reviewStatus: reviewStatus,
+            primaryLabels: TimelineDeriver.primaryLabels(from: segments)
+        )
+
+        do {
+            try store.saveSession(storedSession, review: nil, segments: segments, rawEventCount: rawEventCount)
+            try store.clearSessionReview(sessionID: sessionID)
+            latestSessionID = sessionID
+            refreshHistory()
+        } catch {
+            assignErrorMessage(error)
         }
     }
 
@@ -976,6 +957,7 @@ final class AppModel: ObservableObject {
         lastSessionReviewPrompt = prompt
         lastSessionReviewRawResponse = rawResponse
         surfaceState = .reviewReady
+        resetFocusGuardState()
 
         let storedSession = StoredSession(
             id: sessionID,
@@ -1004,53 +986,8 @@ final class AppModel: ObservableObject {
             lastReviewErrorMessage = reviewStatus == .ready ? nil : lastReviewErrorMessage
             errorMessage = nil
         } catch {
-            errorMessage = error.localizedDescription
+            assignErrorMessage(error)
         }
-    }
-
-    private func fallbackReview(
-        title: String,
-        startedAt: Date,
-        endedAt: Date,
-        events: [ActivityEvent],
-        calendarTitles: [String],
-        segments: [TimelineSegment],
-        headline _: String,
-        summary fallbackSummary: String
-    ) -> SessionReview {
-        let narrative = makeLocalNarrative(
-            title: title,
-            startedAt: startedAt,
-            endedAt: endedAt,
-            segments: segments,
-            fallbackSummary: fallbackSummary
-        )
-
-        return enrichSessionReview(
-            SessionReview(
-                sessionTitle: title,
-                startedAt: startedAt,
-                endedAt: endedAt,
-                verdict: narrative.verdict,
-                quality: narrative.quality,
-                goalMatch: narrative.goalMatch,
-                headline: narrative.headline,
-                summary: narrative.summary,
-                summarySpans: [],
-                why: narrative.summary,
-                interruptions: narrative.interruptions,
-                interruptionSpans: [],
-                reasons: narrative.reasons,
-                timeline: [],
-                trace: [],
-                focusAssessment: narrative.focusAssessment,
-                confidenceNotes: narrative.confidenceNotes,
-                segments: segments
-            ),
-            events: events,
-            calendarTitles: calendarTitles,
-            segments: segments
-        )
     }
 
     private static func preferredReviewDisplayName() -> String? {
@@ -1116,23 +1053,14 @@ final class AppModel: ObservableObject {
         allEvents.filter { $0.occurredAt >= session.startedAt && $0.occurredAt <= endAt }.count
     }
 
-    private func nearbyCalendarTitles(startedAt: Date, endedAt: Date) -> [String] {
-        guard trackCalendarContext else { return [] }
-        let paddedStart = startedAt.addingTimeInterval(-15 * 60)
-        let paddedEnd = endedAt.addingTimeInterval(15 * 60)
-        return calendarEvents
-            .filter { $0.endAt >= paddedStart && $0.startAt <= paddedEnd }
-            .map(\.title)
-    }
-
     private func enrichSessionReview(
         _ review: SessionReview,
         events: [ActivityEvent],
-        calendarTitles: [String],
         segments: [TimelineSegment]
     ) -> SessionReview {
+        let evidenceEvents = events.filter { !$0.kind.isFocusGuardSignal }
         let attentionSegments = AttentionDeriver.derive(from: segments)
-        let evidence = makeEvidenceSummary(events: events, calendarTitles: calendarTitles)
+        let evidence = makeEvidenceSummary(events: evidenceEvents)
         let timeline = !segments.isEmpty
             ? Array(segments.prefix(6)).map {
                 SessionTimelineEntry(
@@ -1154,19 +1082,19 @@ final class AppModel: ObservableObject {
             headline: review.headline,
             summary: review.summary,
             summarySpans: review.summarySpans,
-            why: review.summary,
+            why: review.why,
             interruptions: review.interruptions,
             interruptionSpans: review.interruptionSpans,
-            reasons: review.reasons.isEmpty ? review.confidenceNotes : review.reasons,
+            reasons: review.reasons,
             timeline: timeline,
             trace: evidence.trace,
             evidence: evidence,
-            links: makeReferenceLinks(events: events),
-            appDurations: appDurations(from: events, sessionEnd: review.endedAt),
-            appSwitchCount: events.filter { $0.kind == .appActivated || $0.kind == .tabChanged }.count,
-            repoName: TimelineDeriver.repoName(from: events),
-            nearbyEventTitle: calendarTitles.first,
-            mediaSummary: mediaSummary(from: events),
+            links: makeReferenceLinks(events: evidenceEvents),
+            appDurations: appDurations(from: evidenceEvents, sessionEnd: review.endedAt),
+            appSwitchCount: evidenceEvents.filter { $0.kind == .appActivated || $0.kind == .tabChanged }.count,
+            repoName: TimelineDeriver.repoName(from: evidenceEvents),
+            nearbyEventTitle: nil,
+            mediaSummary: mediaSummary(from: evidenceEvents),
             clipboardPreview: evidence.clipboardPreviews.first,
             dominantApps: Array(segments.map(\.appName).orderedUnique().prefix(4)),
             sessionPath: Array(segments.map(\.primaryLabel).orderedUnique().prefix(4)),
@@ -1193,176 +1121,165 @@ final class AppModel: ObservableObject {
     private static func multilineList(from values: [String]) -> String {
         values.joined(separator: "\n")
     }
+
+    func dismissFocusGuardPrompt() {
+        activeFocusGuardPrompt = nil
+    }
+
+    func snoozeFocusGuardPrompt() {
+        guard let activeSession, let prompt = activeFocusGuardPrompt else { return }
+        focusGuardRuntimeState.snoozedUntil = Date().addingTimeInterval(TimeInterval(focusGuardSettings.cooldownMinutes * 60))
+        append(focusGuardEvent(kind: .focusGuardSnoozed, sessionID: activeSession.id, prompt: prompt))
+        activeFocusGuardPrompt = nil
+    }
+
+    func ignoreFocusGuardPrompt() {
+        guard let activeSession, let prompt = activeFocusGuardPrompt else { return }
+        append(focusGuardEvent(kind: .focusGuardIgnored, sessionID: activeSession.id, prompt: prompt))
+        activeFocusGuardPrompt = nil
+    }
+
+    func handleFocusGuardNotificationAction(_ action: FocusGuardNotificationCoordinator.Action, sessionID: String?) {
+        guard let activeSession else { return }
+        if let sessionID, sessionID != activeSession.id {
+            return
+        }
+
+        switch action {
+        case .backOnTrack:
+            dismissFocusGuardPrompt()
+        case .snooze:
+            snoozeFocusGuardPrompt()
+        case .ignore:
+            ignoreFocusGuardPrompt()
+        }
+    }
 }
 
 private extension AppModel {
-    struct LocalNarrative {
-        let headline: String
-        let summary: String
-        let focusAssessment: String
-        let interruptions: [String]
-        let reasons: [String]
-        let confidenceNotes: [String]
-        let verdict: SessionVerdict
-        let quality: SessionQuality
-        let goalMatch: SessionGoalMatch
-    }
-
     struct CompletedSessionContext {
         let sessionID: String
         let title: String
         let startedAt: Date
         let endedAt: Date
         let events: [ActivityEvent]
-        let calendarTitles: [String]
         let segments: [TimelineSegment]
     }
 
-    enum LocalSegmentRole {
-        case work
-        case drift
-        case neutral
-    }
+    func evaluateFocusGuardIfNeeded(now: Date, session: FocusSession) {
+        guard now >= (nextFocusGuardEvaluationAt ?? session.startedAt) else { return }
+        nextFocusGuardEvaluationAt = now.addingTimeInterval(focusGuardEvaluationInterval)
 
-    struct NarrativePhrase {
-        let clause: String
-        let duration: TimeInterval
-        let richness: Int
-    }
-
-    struct WorkContext {
-        let file: String?
-        let repo: String?
-    }
-
-    func makeLocalNarrative(
-        title: String,
-        startedAt: Date,
-        endedAt: Date,
-        segments: [TimelineSegment],
-        fallbackSummary: String
-    ) -> LocalNarrative {
-        let attentionSegments = AttentionDeriver.derive(from: segments)
-        let narrativeSegments = attentionSegments.map(\.foreground)
-        let overlays = attentionSegments.flatMap(\.overlays)
-        let intent = TimelineDeriver.deriveIntent(from: title)
-
-        guard !narrativeSegments.isEmpty else {
-            let summary = "There wasn’t enough captured activity in this session window to say what you were doing."
-            return LocalNarrative(
-                headline: "This block didn’t leave much usable evidence.",
-                summary: summary,
-                focusAssessment: summary,
-                interruptions: [],
-                reasons: [],
-                confidenceNotes: [fallbackSummary, "This review was generated locally from the captured session timeline."],
-                verdict: .partiallyMatched,
-                quality: .mixed,
-                goalMatch: .unclear
-            )
-        }
-
-        let totalDuration = max(narrativeSegments.reduce(0) { $0 + segmentDuration($1) }, 1)
-        let observedSegments = TimelineDeriver.observeSegments(narrativeSegments, goal: title)
-        let observedRoles = Dictionary(uniqueKeysWithValues: observedSegments.map { ($0.segment.id, $0.role) })
-        let observability = TimelineDeriver.summarizeObservedSegments(observedSegments)
-        let alignedSegments = narrativeSegments.filter {
-            switch observedRoles[$0.id] {
-            case .direct?, .support?:
-                return true
-            default:
-                return false
-            }
-        }
-        let driftSegments = narrativeSegments.filter { observedRoles[$0.id] == .drift }
-        let alignedDuration = TimeInterval(observability.directSeconds + observability.supportSeconds)
-        let driftDuration = TimeInterval(observability.driftSeconds)
-        let switchCount = max(narrativeSegments.count - 1, 0)
-
-        let goalMatch: SessionGoalMatch
-        let quality: SessionQuality
-        switch observability.goalProgressEstimate {
-        case .strong:
-            goalMatch = .strong
-            quality = .coherent
-        case .partial:
-            goalMatch = .partial
-            quality = driftDuration >= totalDuration * 0.35 || switchCount >= 8 ? .mixed : .coherent
-        case .weak:
-            goalMatch = alignedDuration >= totalDuration * 0.25 ? .partial : .weak
-            quality = .mixed
-        case .none:
-            goalMatch = .weak
-            quality = .drifted
-        }
-
-        let verdict = SessionVerdict(goalMatch: goalMatch)
-        let dominantContext = dominantWorkContext(in: narrativeSegments)
-        let workPhrases = selectedPhrases(from: alignedSegments, role: .work, dominantContext: dominantContext, limit: 3)
-        let driftPhrases = selectedPhrases(from: driftSegments, role: .drift, dominantContext: dominantContext, limit: 3)
-        let breakCount = narrativeSegments.filter(isBreakSegment(_:)).count
-
-        let headline: String
-        switch verdict {
-        case .matched:
-            headline = "You mostly stayed with the work in this block."
-        case .partiallyMatched:
-            headline = driftDuration > alignedDuration
-                ? "You stayed near the work, but the block kept drifting."
-                : "You made progress, but the block stayed fragmented."
-        case .missed:
-            headline = "You circled the work more than you pushed it forward."
-        }
-
-        let summary = conciseNarrativeSummary(
-            title: title,
-            intent: intent,
-            verdict: verdict,
-            workPhrases: workPhrases,
-            driftPhrases: driftPhrases,
-            firstNeutralSegment: narrativeSegments.first,
-            dominantContext: dominantContext,
-            audioOverlay: overlays.first(where: { $0.kind == .audio })
+        let sessionEvents = currentSessionEvents(for: session, endingAt: now)
+        let decision = FocusGuardEvaluator.evaluate(
+            goal: session.title,
+            session: session,
+            events: sessionEvents,
+            settings: focusGuardSettings,
+            state: focusGuardRuntimeState,
+            now: now,
+            isUserIdle: isSessionPaused(sessionEvents)
         )
 
-        let focusAssessment: String
-        switch verdict {
-        case .matched:
-            focusAssessment = "The clearest signal was \(joinClauses(Array(workPhrases.prefix(2)))). Drift stayed limited inside this session."
-        case .partiallyMatched:
-            if !workPhrases.isEmpty && !driftPhrases.isEmpty {
-                focusAssessment = "The strongest work signal was \(joinClauses(Array(workPhrases.prefix(2)))), but \(joinClauses(Array(driftPhrases.prefix(2)))) kept interrupting the block."
-            } else {
-                focusAssessment = "This block mixed real work with enough drift that the session never fully locked in."
-            }
-        case .missed:
-            if !driftPhrases.isEmpty {
-                if isIntentProgressSession(intent) {
-                    focusAssessment = "Most of the session was absorbed by \(joinClauses(Array(driftPhrases.prefix(2)))) rather than direct progress on \(inlineEmphasis(title))."
-                } else {
-                    focusAssessment = "Most of the session moved through \(joinClauses(Array(driftPhrases.prefix(2)))) instead of staying with the session intent."
+        focusGuardRuntimeState = decision.state
+        focusGuardAssessment = decision.assessment
+
+        if decision.recordedRecovery {
+            append(
+                ActivityEvent(
+                    occurredAt: now,
+                    source: .manual,
+                    kind: .focusGuardRecovered,
+                    appName: "LogBook",
+                    resourceTitle: decision.assessment.reason,
+                    relatedID: session.id
+                )
+            )
+            activeFocusGuardPrompt = nil
+        }
+
+        guard decision.shouldPrompt,
+              let promptMessage = decision.promptMessage,
+              let promptReason = decision.promptReason else {
+            return
+        }
+
+        let delivery: FocusGuardPromptDelivery = .notification
+        let fallbackMessage = promptMessage
+        let assessment = decision.assessment
+        let currentEvents = sessionEvents
+
+        Task { [weak self, focusGuardNotifications] in
+            guard let self else { return }
+
+            let generatedMessage: String
+            if !self.captureSettings.ollama.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                do {
+                    generatedMessage = try await self.reviewProvider.generateFocusGuardNudge(
+                        configuration: self.captureSettings.ollama,
+                        goal: session.title,
+                        assessmentReason: promptReason,
+                        driftLabels: assessment.driftLabels,
+                        matchedLabels: assessment.matchedLabels,
+                        events: currentEvents
+                    )
+                } catch {
+                    generatedMessage = fallbackMessage
                 }
             } else {
-                focusAssessment = "This session did not leave a strong enough work thread to call it focused."
+                generatedMessage = fallbackMessage
+            }
+
+            await MainActor.run {
+                guard self.activeSession?.id == session.id else { return }
+                let prompt = FocusGuardPrompt(
+                    sessionID: session.id,
+                    message: generatedMessage,
+                    reason: promptReason,
+                    shownAt: now,
+                    delivery: delivery
+                )
+                self.activeFocusGuardPrompt = prompt
+                self.append(self.focusGuardEvent(kind: .focusGuardPrompted, sessionID: session.id, prompt: prompt))
+                Task { [focusGuardNotifications] in
+                    await focusGuardNotifications.schedule(prompt: prompt)
+                }
             }
         }
+    }
 
-        let interruptions = interruptionSummaries(from: driftSegments, breakCount: breakCount, overlays: overlays)
-        var confidenceNotes = [fallbackSummary, "This review was generated locally from the captured session timeline."]
-        if !overlays.isEmpty {
-            confidenceNotes.append("Background context can overlap foreground activity, so attention is inferred rather than observed directly.")
+    func currentSessionEvents(for session: FocusSession, endingAt endAt: Date) -> [ActivityEvent] {
+        allEvents
+            .filter { $0.occurredAt >= session.startedAt && $0.occurredAt <= endAt }
+            .sorted { $0.occurredAt < $1.occurredAt }
+    }
+
+    func isSessionPaused(_ events: [ActivityEvent]) -> Bool {
+        guard let lastPauseEvent = events.last(where: {
+            $0.kind == .userIdle || $0.kind == .userResumed || $0.kind == .systemSlept || $0.kind == .systemWoke
+        }) else {
+            return false
         }
-        return LocalNarrative(
-            headline: headline,
-            summary: summary,
-            focusAssessment: focusAssessment,
-            interruptions: interruptions,
-            reasons: [],
-            confidenceNotes: confidenceNotes,
-            verdict: verdict,
-            quality: quality,
-            goalMatch: goalMatch
+        return lastPauseEvent.kind == .userIdle || lastPauseEvent.kind == .systemSlept
+    }
+
+    func focusGuardEvent(kind: ActivityKind, sessionID: String, prompt: FocusGuardPrompt) -> ActivityEvent {
+        ActivityEvent(
+            occurredAt: Date(),
+            source: .manual,
+            kind: kind,
+            appName: "LogBook",
+            resourceTitle: prompt.reason,
+            noteText: prompt.message,
+            relatedID: sessionID
         )
+    }
+
+    func resetFocusGuardState() {
+        focusGuardRuntimeState = FocusGuardRuntimeState()
+        nextFocusGuardEvaluationAt = nil
+        focusGuardAssessment = FocusGuardAssessment.empty
+        activeFocusGuardPrompt = nil
     }
 
     func deriveWatchRoots(from events: [ActivityEvent]) -> [String] {
@@ -1371,14 +1288,16 @@ private extension AppModel {
 
         for candidate in events.reversed().flatMap({ [$0.workingDirectory, $0.path] }).compactMap({ $0 }) {
             let normalized = URL(fileURLWithPath: candidate).standardizedFileURL.path
-            guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
+            guard !normalized.isEmpty else { continue }
+            guard !PathNoiseFilter.shouldIgnoreFileActivity(path: normalized) else { continue }
+            guard seen.insert(normalized).inserted else { continue }
             roots.append(normalized)
             if roots.count >= 12 { break }
         }
         return roots
     }
 
-    func makeEvidenceSummary(events: [ActivityEvent], calendarTitles: [String]) -> SessionEvidenceSummary {
+    func makeEvidenceSummary(events: [ActivityEvent]) -> SessionEvidenceSummary {
         SessionEvidenceSummary(
             topApps: topCounts(events.compactMap(\.appName), limit: 5),
             topTitles: topCounts((events.compactMap(\.windowTitle) + events.compactMap(\.resourceTitle)).map(normalizedLabel(_:)), limit: 8),
@@ -1387,7 +1306,6 @@ private extension AppModel {
             commands: uniquePreservingOrder(events.compactMap(\.command).map(normalizedLabel(_:)), limit: 8),
             clipboardPreviews: uniquePreservingOrder(events.compactMap(\.clipboardPreview).map(normalizedLabel(_:)), limit: 3),
             quickNotes: uniquePreservingOrder(events.compactMap(\.noteText).map(normalizedLabel(_:)), limit: 4),
-            calendarTitles: calendarTitles,
             trace: makeTrace(events: events)
         )
     }
@@ -1492,348 +1410,6 @@ private extension AppModel {
         return "\(trimmed[..<index])..."
     }
 
-    func localRole(for observedRole: SessionSegmentRole) -> LocalSegmentRole {
-        switch observedRole {
-        case .direct, .support:
-            return .work
-        case .drift, .breakTime:
-            return .drift
-        case .neutral:
-            return .neutral
-        }
-    }
-
-    func isBreakSegment(_ segment: TimelineSegment) -> Bool {
-        segment.appName == "Log Book" && segment.primaryLabel.lowercased().contains("break")
-    }
-
-    func selectedPhrases(from segments: [TimelineSegment], role: LocalSegmentRole, dominantContext: WorkContext?, limit: Int) -> [String] {
-        let candidates = segments.compactMap { segment -> NarrativePhrase? in
-            guard let clause = activityClause(for: segment, role: role, dominantContext: dominantContext) else { return nil }
-            return NarrativePhrase(clause: clause, duration: segmentDuration(segment), richness: phraseRichness(for: segment))
-        }
-
-        let richThreshold = role == .work ? 2 : 1
-        let preferred = candidates.filter { $0.richness >= richThreshold }
-        let source = preferred.isEmpty ? candidates : preferred
-
-        var seen: Set<String> = []
-        var result: [String] = []
-        for candidate in source {
-            if seen.insert(candidate.clause).inserted {
-                result.append(candidate.clause)
-            }
-            if result.count >= limit { break }
-        }
-        return result
-    }
-
-    func activityClause(for segment: TimelineSegment, role: LocalSegmentRole, dominantContext: WorkContext?) -> String? {
-        let primary = normalizedLabel(segment.primaryLabel)
-        let secondary = segment.secondaryLabel.map(normalizedLabel(_:))
-        let lowerPrimary = primary.lowercased()
-        let lowerApp = segment.appName.lowercased()
-        let domain = (segment.domain ?? "").lowercased()
-        let fileName = segment.filePath.map { URL(fileURLWithPath: $0).lastPathComponent }.flatMap { $0.isEmpty ? nil : $0 }
-
-        if isBreakSegment(segment) {
-            return "taking a short break"
-        }
-
-        if lowerPrimary.contains("new tab") {
-            return "sitting in \(inlineEmphasis("New tab"))"
-        }
-
-        if domain == "github.com" {
-            if let secondary, secondary.contains("/") {
-                return "reviewing \(inlineCode(secondary)) on \(inlineEmphasis("GitHub"))"
-            }
-            return "browsing \(inlineEmphasis("GitHub"))"
-        }
-
-        if domain.contains("calendar.notion.so") || lowerPrimary.contains("calendar") {
-            return "checking \(inlineEmphasis("Notion Calendar"))"
-        }
-
-        if domain == "youtube.com" || domain == "youtu.be" {
-            if primary == "YouTube Home" {
-                return role == .drift ? "drifting into \(inlineEmphasis("YouTube Home"))" : "opening \(inlineEmphasis("YouTube Home"))"
-            }
-            if primary == "YouTube Shorts", let secondary, !secondary.isEmpty {
-                return "viewing \(inlineEmphasis(secondary)) in \(inlineEmphasis("YouTube Shorts"))"
-            }
-            if primary == "YouTube Watch", let secondary, !secondary.isEmpty {
-                return "viewing \(inlineEmphasis(secondary)) on \(inlineEmphasis("YouTube"))"
-            }
-            if let secondary, !secondary.isEmpty {
-                return "opening \(inlineEmphasis(secondary)) on \(inlineEmphasis("YouTube"))"
-            }
-            return "opening \(inlineEmphasis("YouTube"))"
-        }
-
-        if domain == "x.com" || domain == "twitter.com" {
-            if secondary == "Home feed" {
-                return "checking the \(inlineEmphasis("X")) home feed"
-            }
-            if let secondary, !secondary.isEmpty {
-                return "opening \(inlineEmphasis(secondary)) on \(inlineEmphasis("X"))"
-            }
-            return "opening \(inlineEmphasis("X"))"
-        }
-
-        if lowerApp.contains("spotify") {
-            return primary.lowercased() == "spotify"
-                ? "switching to \(inlineEmphasis("Spotify"))"
-                : "switching to \(inlineEmphasis("Spotify")) with \(inlineEmphasis(primary)) visible"
-        }
-
-        if let repoName = segment.repoName, let fileName, fileName != segment.appName {
-            return "editing \(inlineCode(fileName)) in \(inlineCode(repoName))"
-        }
-
-        if let fileName, fileName != segment.appName {
-            return "editing \(inlineCode(fileName))"
-        }
-
-        if let repoName = segment.repoName, let secondary, !secondary.isEmpty, secondary != repoName {
-            if role == .work {
-                return "reviewing \(inlineCode(secondary))"
-            }
-            return "looking at \(inlineCode(secondary))"
-        }
-
-        if let repoName = segment.repoName, !repoName.isEmpty {
-            return role == .work ? "working in \(inlineCode(repoName))" : "looking around \(inlineCode(repoName))"
-        }
-
-        if lowerApp.contains("cursor") || lowerApp.contains("codex") || lowerApp.contains("xcode") || lowerApp.contains("code") {
-            if let file = dominantContext?.file, let repo = dominantContext?.repo {
-                return "editing \(inlineCode(file)) in \(inlineCode(repo))"
-            }
-            if let file = dominantContext?.file {
-                return "editing \(inlineCode(file))"
-            }
-            if let repo = dominantContext?.repo {
-                return "working in \(inlineCode(repo))"
-            }
-            return "working in \(inlineCode(segment.appName))"
-        }
-
-        if primary != segment.appName {
-            switch role {
-            case .work:
-                return "working on \(inlineEmphasis(primary))"
-            case .drift:
-                return "opening \(inlineEmphasis(primary))"
-            case .neutral:
-                return "moving through \(inlineEmphasis(primary))"
-            }
-        }
-
-        return role == .work ? "working in \(inlineEmphasis(segment.appName))" : "switching into \(inlineEmphasis(segment.appName))"
-    }
-
-    func dominantWorkContext(in segments: [TimelineSegment]) -> WorkContext? {
-        let workSegments = segments.filter {
-            $0.category == .coding || $0.filePath != nil || $0.repoName != nil || ($0.domain ?? "") == "github.com"
-        }
-
-        let file = workSegments
-            .compactMap(\.filePath)
-            .map { URL(fileURLWithPath: $0).lastPathComponent }
-            .first(where: { !$0.isEmpty })
-        let repo = workSegments
-            .compactMap(\.repoName)
-            .first(where: { !$0.isEmpty })
-
-        guard file != nil || repo != nil else { return nil }
-        return WorkContext(file: file, repo: repo)
-    }
-
-    func phraseRichness(for segment: TimelineSegment) -> Int {
-        if isBreakSegment(segment) { return 2 }
-        if segment.filePath != nil { return 3 }
-        if segment.repoName != nil { return 3 }
-        if let domain = segment.domain, ["github.com", "youtube.com", "youtu.be", "x.com", "twitter.com"].contains(domain) {
-            return 3
-        }
-        if segment.primaryLabel.lowercased().contains("new tab") {
-            return 1
-        }
-        return segment.secondaryLabel == nil ? 1 : 2
-    }
-
-    func segmentDuration(_ segment: TimelineSegment) -> TimeInterval {
-        max(segment.endAt.timeIntervalSince(segment.startAt), 0)
-    }
-
-    func joinClauses(_ clauses: [String]) -> String {
-        switch clauses.count {
-        case 0:
-            return ""
-        case 1:
-            return clauses[0]
-        case 2:
-            return "\(clauses[0]) and \(clauses[1])"
-        default:
-            let head = clauses.dropLast().joined(separator: ", ")
-            return "\(head), and \(clauses.last!)"
-        }
-    }
-
-    func interruptionSummaries(from driftSegments: [TimelineSegment], breakCount: Int, overlays: [AttentionOverlay]) -> [String] {
-        var items: [String] = []
-
-        let newTabSeconds = driftSegments
-            .filter { $0.primaryLabel.lowercased().contains("new tab") }
-            .reduce(0) { $0 + segmentDuration($1) }
-        if newTabSeconds >= 45 {
-            items.append("\(inlineEmphasis("New tab")) absorbed a noticeable part of the block.")
-        }
-
-        if driftSegments.contains(where: { ($0.domain ?? "").contains("calendar.notion.so") || $0.primaryLabel.lowercased().contains("calendar") }) {
-            items.append("You checked \(inlineEmphasis("Notion Calendar")) during the session.")
-        }
-
-        if let youtube = driftSegments.first(where: { ($0.domain ?? "") == "youtube.com" || ($0.domain ?? "") == "youtu.be" }) {
-            if youtube.primaryLabel == "YouTube Home" {
-                items.append("You drifted into \(inlineEmphasis("YouTube Home")) during the block.")
-            } else if let secondary = youtube.secondaryLabel, !secondary.isEmpty {
-                items.append("You opened \(inlineEmphasis(secondary)) on \(inlineEmphasis("YouTube")) during the block.")
-            } else {
-                items.append("You opened \(inlineEmphasis("YouTube")) during the block.")
-            }
-        }
-
-        if let spotify = overlays.first(where: { $0.kind == .audio && $0.segment.appName.lowercased().contains("spotify") })?.segment {
-            if spotify.primaryLabel.lowercased() == "spotify" {
-                items.append("\(inlineEmphasis("Spotify")) was active in the background.")
-            } else {
-                items.append("\(inlineEmphasis("Spotify")) stayed active with \(inlineEmphasis(spotify.primaryLabel)) visible.")
-            }
-        }
-
-        if let xSegment = driftSegments.first(where: { ($0.domain ?? "") == "x.com" || ($0.domain ?? "") == "twitter.com" }) {
-            if xSegment.secondaryLabel == "Home feed" {
-                items.append("You checked the \(inlineEmphasis("X")) home feed.")
-            } else if let secondary = xSegment.secondaryLabel, !secondary.isEmpty {
-                items.append("You opened \(inlineEmphasis(secondary)) on \(inlineEmphasis("X")).")
-            }
-        }
-
-        if breakCount > 0 {
-            items.append("You marked \(breakCount == 1 ? "a short break" : "\(breakCount) short breaks").")
-        }
-
-        return Array(items.prefix(4))
-    }
-
-    func overlayNarrative(for overlay: AttentionOverlay) -> String {
-        switch overlay.kind {
-        case .audio:
-            if overlay.segment.appName.lowercased().contains("spotify") {
-                return inlineEmphasis("Spotify")
-            }
-            return inlineEmphasis(overlay.segment.appName)
-        case .note:
-            return "A note"
-        case .system:
-            return "System context"
-        case .context:
-            return inlineEmphasis(overlay.segment.primaryLabel)
-        }
-    }
-
-    func conciseNarrativeSummary(
-        title: String,
-        intent: SessionIntent,
-        verdict: SessionVerdict,
-        workPhrases: [String],
-        driftPhrases: [String],
-        firstNeutralSegment: TimelineSegment?,
-        dominantContext: WorkContext?,
-        audioOverlay: AttentionOverlay?
-    ) -> String {
-        let workClause = Array(workPhrases.prefix(1)).first
-        let driftClause = Array(driftPhrases.prefix(1)).first
-        let neutralClause = firstNeutralSegment.flatMap { activityClause(for: $0, role: .neutral, dominantContext: dominantContext) }
-        let audioClause = audioOverlay.map(overlayNarrative(for:))
-
-        switch verdict {
-        case .matched:
-            if !isIntentProgressSession(intent) {
-                if let workClause {
-                    return "You mostly did what you set out to do: \(workClause)."
-                }
-                return "You mostly stayed with the session you meant to have."
-            }
-            if let workClause {
-                return "You mostly stayed with \(workClause), and the block moved \(inlineEmphasis(title)) forward."
-            }
-            return "You stayed with \(inlineEmphasis(title)) closely enough for the block to move forward."
-        case .partiallyMatched:
-            if !isIntentProgressSession(intent) {
-                if let workClause, let driftClause {
-                    return "You mostly stayed with \(workClause), but \(driftClause) pulled part of the block elsewhere."
-                }
-                if let workClause {
-                    return "You spent most of the block \(workClause), but the session still wandered."
-                }
-                if let driftClause {
-                    return "You spent much of the block \(driftClause), so the session only partly matched what you meant to do."
-                }
-                return "The session stayed near what you meant to do, but drift took over too often."
-            }
-            if let workClause, let driftClause {
-                return "You stayed near \(workClause), but \(driftClause) kept \(inlineEmphasis(title)) from moving much."
-            }
-            if let workClause {
-                return "You stayed near \(workClause), but the block never settled into enough sustained work to move \(inlineEmphasis(title)) much."
-            }
-            if let driftClause {
-                return "You spent much of the block \(driftClause), so \(inlineEmphasis(title)) barely moved."
-            }
-            return "You stayed near \(inlineEmphasis(title)), but the block did not turn into steady progress."
-        case .missed:
-            if !isIntentProgressSession(intent) {
-                if let driftClause {
-                    return "You mostly spent the block \(driftClause) instead of staying with what you set out to do."
-                }
-                if let neutralClause {
-                    return "You mostly spent the block \(neutralClause) instead of staying with what you set out to do."
-                }
-                return "This session turned into something other than what you set out to do."
-            }
-            if let driftClause {
-                var sentence = "You mostly spent the block \(driftClause) instead of moving \(inlineEmphasis(title)) forward."
-                if let audioClause {
-                    sentence += " \(audioClause) also stayed in the background."
-                }
-                return sentence
-            }
-            if let neutralClause {
-                return "You mostly spent the block \(neutralClause) instead of moving \(inlineEmphasis(title)) forward."
-            }
-            return "This block moved away from \(inlineEmphasis(title)) more than it moved it forward."
-        }
-    }
-
-    func inlineCode(_ value: String) -> String {
-        "**`\(value.replacingOccurrences(of: "`", with: ""))`**"
-    }
-
-    func inlineEmphasis(_ value: String) -> String {
-        "**\(value.replacingOccurrences(of: "*", with: ""))**"
-    }
-
-    func isIntentProgressSession(_ intent: SessionIntent) -> Bool {
-        switch intent.mode {
-        case .watch, .listen, .browse:
-            return false
-        case .build, .review, .write, .research, .communicate, .admin, .mixed, .unknown:
-            return true
-        }
-    }
 }
 
 private extension Sequence where Element: Hashable {

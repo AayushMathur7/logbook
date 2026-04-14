@@ -1,10 +1,10 @@
 # Privacy
 
-Log Book is designed to be easy to understand.
+LogBook is designed to be easy to understand.
 
 ## What the app does
 
-Log Book watches lightweight local activity during a session so it can write a short review at the end.
+LogBook watches lightweight local activity during a session so it can write a short review at the end.
 
 The goal is simple:
 
@@ -14,7 +14,7 @@ The goal is simple:
 
 ## What the app captures
 
-Depending on your settings and macOS permissions, Log Book can capture:
+Depending on your settings and macOS permissions, LogBook can capture:
 
 - app switches, launches, and quits
 - wake and sleep events
@@ -24,11 +24,10 @@ Depending on your settings and macOS permissions, Log Book can capture:
 - shell commands through the shell integration
 - file activity under watched roots
 - clipboard previews
-- nearby calendar titles
 
 ## What the app does not capture
 
-Log Book does not capture:
+LogBook does not capture:
 
 - screenshots
 - screen recordings
@@ -38,7 +37,7 @@ Log Book does not capture:
 
 ## Where data stays
 
-Log Book is designed to keep data on your Mac.
+LogBook is designed to keep data on your Mac.
 
 - captured session data is stored locally
 - the current database lives at `~/Library/Application Support/Logbook/logbook.sqlite`
@@ -46,7 +45,7 @@ Log Book is designed to keep data on your Mac.
 
 ## AI review generation
 
-Log Book currently uses a local Ollama model for AI review generation.
+LogBook currently uses a local Ollama model for AI review generation.
 
 - model calls are limited to a local Ollama host
 - there is no cloud fallback

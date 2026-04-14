@@ -1,6 +1,6 @@
-# Log Book
+# LogBook
 
-Log Book is a local-first macOS app that helps you compare the work you planned with the work that actually happened during a session.
+LogBook is a local-first macOS app that helps you compare the work you planned with the work that actually happened during a session.
 
 You type a goal, start a timer, let the app capture lightweight local signals, and then read a short review in plain English.
 
@@ -15,7 +15,7 @@ The product is intentionally opinionated:
 1. Write what you are focusing on.
 2. Pick a session length.
 3. Start the session.
-4. Let Log Book capture lightweight local evidence during the block.
+4. Let LogBook capture lightweight local evidence during the block.
 5. End the block or let the timer finish.
 6. Read a short review and save it to history.
 
@@ -27,7 +27,7 @@ Current UX:
 
 ## Product Shape
 
-Log Book is built around intent, not a hardcoded idea of productivity.
+LogBook is built around intent, not a hardcoded idea of productivity.
 
 Examples:
 
@@ -48,12 +48,12 @@ The review UI currently focuses on:
 In simple terms:
 
 - you say what this block is for
-- Log Book watches lightweight local signals during that block
+- LogBook watches lightweight local signals during that block
 - at the end, it tells you whether the block stayed on track
 
 ## What It Captures
 
-Log Book captures lightweight local signals during a session window.
+LogBook captures lightweight local signals during a session window.
 
 Current capture includes:
 
@@ -65,7 +65,6 @@ Current capture includes:
 - shell commands imported from `integrations/shell/logbook.zsh`
 - file activity under watched roots
 - clipboard changes with a short preview
-- nearby calendar context when Calendar access is granted
 
 It does not capture:
 
@@ -93,7 +92,7 @@ Runtime storage lives at:
 
 ## Local Review Generation
 
-Log Book currently uses Ollama for AI review generation.
+LogBook currently uses Ollama for AI review generation.
 
 Important constraints:
 
@@ -186,8 +185,11 @@ Exclusions, redactions, retention, and watched paths are configured in `Settings
 
 See also:
 
+- `LICENSE`
 - `PRIVACY.md`
 - `SECURITY.md`
+- `docs/install.md`
+- `docs/release-macos.md`
 - `docs/launch-checklist.md`
 
 ## Current Limitations

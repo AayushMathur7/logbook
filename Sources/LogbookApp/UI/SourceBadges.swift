@@ -112,7 +112,7 @@ private struct SourceBadgeIconView: View {
 enum SourceBadgeFactory {
     static func badges(for segments: [TimelineSegment]) -> [SourceBadgeModel] {
         if let domain = segments.compactMap(\.domain).first(where: { !$0.isEmpty }) {
-            return [identity(for: normalizedDomainLabel(domain))]
+            return [identity(for: domain)]
         }
 
         if let filePath = segments.compactMap(\.filePath).first(where: { !$0.isEmpty }),
@@ -127,64 +127,14 @@ enum SourceBadgeFactory {
         return []
     }
 
-    private static func normalizedDomainLabel(_ domain: String) -> String {
-        switch domain.lowercased() {
-        case "github.com":
-            return "GitHub"
-        case "docs.google.com":
-            return "Google Docs"
-        case "drive.google.com":
-            return "Google Drive"
-        case "youtube.com", "youtu.be":
-            return "YouTube"
-        case "x.com", "twitter.com":
-            return "X"
-        case "calendar.notion.so":
-            return "Notion Calendar"
-        default:
-            return domain.replacingOccurrences(of: "www.", with: "")
-        }
-    }
-
     private static func identity(for label: String) -> SourceBadgeModel {
         switch label.lowercased() {
-        case "cursor":
-            return SourceBadgeModel(label: "Cursor", icon: .app(bundleID: "com.todesktop.230313mzl4w4u92"))
-        case "codex":
-            return SourceBadgeModel(label: "Codex", icon: .brandAsset("openai"))
-        case "google chrome", "chrome":
-            return SourceBadgeModel(label: "Chrome", icon: .brandAsset("chrome"))
-        case "google docs":
-            return SourceBadgeModel(label: "Google Docs", icon: .system("doc.text"))
-        case "google drive":
-            return SourceBadgeModel(label: "Google Drive", icon: .system("folder"))
-        case "github":
-            return SourceBadgeModel(label: "GitHub", icon: .brandAsset("github"))
-        case "youtube":
-            return SourceBadgeModel(label: "YouTube", icon: .brandAsset("youtube"))
-        case "x":
-            return SourceBadgeModel(label: "X", icon: .brandAsset("x"))
-        case "spotify":
-            return SourceBadgeModel(label: "Spotify", icon: .brandAsset("spotify"))
-        case "whatsapp":
-            return SourceBadgeModel(label: "WhatsApp", icon: .app(bundleID: "net.whatsapp.WhatsApp"))
-        case "notion calendar":
-            return SourceBadgeModel(label: "Notion Calendar", icon: .brandAsset("notion"))
-        case "notion":
-            return SourceBadgeModel(label: "Notion", icon: .brandAsset("notion"))
-        case "finder":
-            return SourceBadgeModel(label: "Finder", icon: .app(bundleID: "com.apple.finder"))
-        case "terminal":
-            return SourceBadgeModel(label: "Terminal", icon: .app(bundleID: "com.apple.Terminal"))
-        case "messages":
-            return SourceBadgeModel(label: "Messages", icon: .app(bundleID: "com.apple.MobileSMS"))
-        case "safari":
-            return SourceBadgeModel(label: "Safari", icon: .app(bundleID: "com.apple.Safari"))
-        case "log book":
-            return SourceBadgeModel(label: "Log Book", icon: .system("book.closed.fill"))
         case "new tab", "newtab":
             return SourceBadgeModel(label: "Chrome tab", icon: .brandAsset("chrome"))
         default:
+            if let definition = ReviewEntityRegistry.definition(matchingValue: label) {
+                return ReviewEntityRegistry.badge(forDefinition: definition)
+            }
             return SourceBadgeModel(label: label, icon: .none)
         }
     }
@@ -193,48 +143,11 @@ enum SourceBadgeFactory {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        let lowered = trimmed.lowercased()
-        if lowered == "new tab" || lowered == "newtab" {
+        if ["new tab", "newtab"].contains(trimmed.lowercased()) {
             return identity(for: "new tab")
         }
-        if lowered.contains("notion calendar") {
-            return SourceBadgeModel(label: "Notion Calendar", icon: .brandAsset("notion"))
-        }
-        if lowered == "notion" {
-            return SourceBadgeModel(label: "Notion", icon: .brandAsset("notion"))
-        }
-        if lowered.contains("github") {
-            return SourceBadgeModel(label: trimmed, icon: .brandAsset("github"))
-        }
-        if lowered.contains("google doc") || lowered.contains("docs.google") {
-            return SourceBadgeModel(label: trimmed, icon: .system("doc.text"))
-        }
-        if lowered.contains("google drive") || lowered.contains("drive.google") {
-            return SourceBadgeModel(label: trimmed, icon: .system("folder"))
-        }
-        if lowered.contains("youtube") {
-            return SourceBadgeModel(label: trimmed, icon: .brandAsset("youtube"))
-        }
-        if lowered == "x" || lowered.contains(" on x") || lowered.contains("x home") {
-            return SourceBadgeModel(label: trimmed, icon: .brandAsset("x"))
-        }
-        if lowered.contains("spotify") {
-            return SourceBadgeModel(label: trimmed, icon: .brandAsset("spotify"))
-        }
-        if lowered.contains("whatsapp") {
-            return SourceBadgeModel(label: trimmed, icon: .app(bundleID: "net.whatsapp.WhatsApp"))
-        }
-        if lowered.contains("chrome") {
-            return SourceBadgeModel(label: trimmed, icon: .brandAsset("chrome"))
-        }
-        if lowered.contains("cursor") {
-            return SourceBadgeModel(label: trimmed, icon: .app(bundleID: "com.todesktop.230313mzl4w4u92"))
-        }
-        if lowered.contains("codex") {
-            return SourceBadgeModel(label: trimmed, icon: .brandAsset("openai"))
-        }
-        if lowered.contains("log book") || lowered.contains("logbook") {
-            return SourceBadgeModel(label: trimmed, icon: .system("book.closed.fill"))
+        if let definition = ReviewEntityRegistry.definition(matchingValue: trimmed) {
+            return ReviewEntityRegistry.badge(forDefinition: definition)
         }
         if let badge = fileBadge(for: trimmed) {
             return badge

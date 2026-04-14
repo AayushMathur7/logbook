@@ -26,9 +26,16 @@ protocol LocalReviewProvider {
         startedAt: Date,
         endedAt: Date,
         events: [ActivityEvent],
-        segments: [TimelineSegment],
-        calendarTitles: [String]
+        segments: [TimelineSegment]
     ) async throws -> LocalReviewRun
+    func generateFocusGuardNudge(
+        configuration: OllamaConfiguration,
+        goal: String,
+        assessmentReason: String,
+        driftLabels: [String],
+        matchedLabels: [String],
+        events: [ActivityEvent]
+    ) async throws -> String
     func summarizeLearningMemory(
         configuration: OllamaConfiguration,
         personName: String?,
@@ -57,15 +64,14 @@ enum AIProviderBridge: LocalReviewProvider {
         startedAt: Date,
         endedAt: Date,
         events: [ActivityEvent],
-        segments: [TimelineSegment],
-        calendarTitles: [String]
+        segments: [TimelineSegment]
     ) async throws -> LocalReviewRun {
         let baseURL = try validatedBaseURL(from: configuration)
         guard !configuration.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw OllamaError.missingModel
         }
 
-        let prompt = sessionReviewPrompt(
+        let primaryPrompt = sessionReviewPrompt(
             title: title,
             personName: personName,
             reviewLearnings: reviewLearnings,
@@ -73,38 +79,18 @@ enum AIProviderBridge: LocalReviewProvider {
             startedAt: startedAt,
             endedAt: endedAt,
             events: events,
-            segments: segments,
-            calendarTitles: calendarTitles
+            segments: segments
         )
-
-        var request = URLRequest(url: baseURL.appending(path: "/api/generate"))
-        request.httpMethod = "POST"
-        request.timeoutInterval = TimeInterval(max(configuration.timeoutSeconds, 10))
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(
-            OllamaGenerateRequest(
-                model: configuration.modelName,
-                prompt: prompt,
-                stream: false
-            )
-        )
-
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let response = try JSONDecoder().decode(OllamaGenerateResponse.self, from: data)
-        let raw = response.response.trimmingCharacters(in: .whitespacesAndNewlines)
-        let review = try parseSessionReview(
-            from: raw,
+        return try await generateReviewRun(
+            configuration: configuration,
+            baseURL: baseURL,
+            prompt: primaryPrompt,
             title: title,
             personName: personName,
             startedAt: startedAt,
             endedAt: endedAt,
+            events: events,
             segments: segments
-        )
-        return LocalReviewRun(
-            providerTitle: "Ollama",
-            prompt: prompt,
-            rawResponse: raw,
-            review: review
         )
     }
 
@@ -128,13 +114,53 @@ enum AIProviderBridge: LocalReviewProvider {
             OllamaGenerateRequest(
                 model: configuration.modelName,
                 prompt: prompt,
-                stream: false
+                stream: false,
+                format: nil
             )
         )
 
         let (data, _) = try await URLSession.shared.data(for: request)
         let response = try JSONDecoder().decode(OllamaGenerateResponse.self, from: data)
         return try parseLearningMemory(from: response.response, sourceFeedbackCount: feedbackExamples.count)
+    }
+
+    func generateFocusGuardNudge(
+        configuration: OllamaConfiguration,
+        goal: String,
+        assessmentReason: String,
+        driftLabels: [String],
+        matchedLabels: [String],
+        events: [ActivityEvent]
+    ) async throws -> String {
+        let baseURL = try validatedBaseURL(from: configuration)
+        guard !configuration.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw OllamaError.missingModel
+        }
+
+        let prompt = focusGuardNudgePrompt(
+            goal: goal,
+            assessmentReason: assessmentReason,
+            driftLabels: driftLabels,
+            matchedLabels: matchedLabels,
+            events: events
+        )
+
+        var request = URLRequest(url: baseURL.appending(path: "/api/generate"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = TimeInterval(min(max(configuration.timeoutSeconds, 10), 20))
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            OllamaGenerateRequest(
+                model: configuration.modelName,
+                prompt: prompt,
+                stream: false,
+                format: nil
+            )
+        )
+
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let response = try JSONDecoder().decode(OllamaGenerateResponse.self, from: data)
+        return try parseFocusGuardNudge(from: response.response)
     }
 
     private func validatedBaseURL(from configuration: OllamaConfiguration) throws -> URL {
@@ -147,36 +173,111 @@ enum AIProviderBridge: LocalReviewProvider {
         return url
     }
 
+    private func generateReviewRun(
+        configuration: OllamaConfiguration,
+        baseURL: URL,
+        prompt: String,
+        title: String,
+        personName: String?,
+        startedAt: Date,
+        endedAt: Date,
+        events: [ActivityEvent],
+        segments: [TimelineSegment]
+    ) async throws -> LocalReviewRun {
+        var raw = ""
+
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "/api/generate"))
+            request.httpMethod = "POST"
+            request.timeoutInterval = TimeInterval(max(configuration.timeoutSeconds, 10))
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(
+                OllamaGenerateRequest(
+                    model: configuration.modelName,
+                    prompt: prompt,
+                    stream: false,
+                    format: .jsonSchema(.sessionReview)
+                )
+            )
+
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let response = try JSONDecoder().decode(OllamaGenerateResponse.self, from: data)
+            raw = response.response.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let review = try parseSessionReview(
+                from: raw,
+                title: title,
+                personName: personName,
+                startedAt: startedAt,
+                endedAt: endedAt,
+                events: events,
+                segments: segments
+            )
+            return LocalReviewRun(
+                providerTitle: "Ollama",
+                prompt: prompt,
+                rawResponse: raw,
+                review: review
+            )
+        } catch {
+            ReviewDebugLogger.logReviewFailure(
+                sessionTitle: title,
+                error: error.localizedDescription,
+                prompt: prompt,
+                rawResponse: raw
+            )
+
+            if let error = error as? OllamaError {
+                throw error
+            }
+            throw OllamaError.invalidReview("The local model did not return valid structured review output.")
+        }
+    }
+
     private func parseSessionReview(
         from output: String,
         title: String,
         personName: String?,
         startedAt: Date,
         endedAt: Date,
+        events: [ActivityEvent],
         segments: [TimelineSegment]
     ) throws -> SessionReview {
-        let payload = parsePlainTextReviewPayload(from: output)
-        let normalizedHeadline = sanitizedReviewHeadline(
-            normalizedReviewText(payload.headline, personName: personName),
-            goal: title
-        ).trimmedOrFallback("Session review ready.")
-        let normalizedRecap = normalizedReviewText(payload.recap, personName: personName).trimmedOrFallback("The session completed with local evidence only.")
-        let normalizedSummarySpans = inferredRichSpans(from: normalizedRecap, goal: title, segments: segments)
-        let normalizedTakeaway = normalizedReviewText(payload.takeaway, personName: personName).trimmedOrFallback("The outcome stayed unclear.")
+        let payload = try parseStructuredSessionReviewPayload(from: output)
+        let headline = payload.headline.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = payload.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let insight = payload.insight.trimmingCharacters(in: .whitespacesAndNewlines)
+        let observedSegments = TimelineDeriver.observeSegments(segments, goal: title)
+        let observability = TimelineDeriver.summarizeObservedSegments(observedSegments)
+
+        let goalMatch: SessionGoalMatch
+        let quality: SessionQuality
+        switch observability.goalProgressEstimate {
+        case .strong:
+            goalMatch = .strong
+            quality = .coherent
+        case .partial:
+            goalMatch = .partial
+            quality = .mixed
+        case .weak, .none:
+            goalMatch = .weak
+            quality = observability.driftSeconds > 0 ? .drifted : .mixed
+        }
+
         return SessionReview(
             sessionTitle: title,
             startedAt: startedAt,
             endedAt: endedAt,
-            verdict: payload.verdict,
-            quality: payload.verdict == .matched ? .coherent : (payload.verdict == .missed ? .drifted : .mixed),
-            goalMatch: payload.verdict == .matched ? .strong : (payload.verdict == .missed ? .weak : .partial),
-            headline: normalizedHeadline,
-            summary: normalizedRecap,
-            summarySpans: normalizedSummarySpans,
-            why: normalizedRecap,
+            verdict: SessionVerdict(goalMatch: goalMatch),
+            quality: quality,
+            goalMatch: goalMatch,
+            headline: headline,
+            summary: body,
+            summarySpans: [],
+            why: body,
             interruptions: [],
             interruptionSpans: [],
-            reasons: [normalizedTakeaway],
+            reasons: [insight],
             timeline: Array(segments.prefix(6)).map {
                 SessionTimelineEntry(
                     at: ActivityFormatting.shortTime.string(from: $0.startAt),
@@ -199,7 +300,7 @@ enum AIProviderBridge: LocalReviewProvider {
             breakPoint: nil,
             dominantThread: nil,
             referenceURL: nil,
-            focusAssessment: normalizedTakeaway,
+            focusAssessment: insight,
             confidenceNotes: [],
             segments: segments,
             attentionSegments: AttentionDeriver.derive(from: segments)
@@ -214,28 +315,21 @@ enum AIProviderBridge: LocalReviewProvider {
         startedAt: Date,
         endedAt: Date,
         events: [ActivityEvent],
-        segments: [TimelineSegment],
-        calendarTitles: [String]
+        segments: [TimelineSegment]
     ) -> String {
-        let intent = TimelineDeriver.deriveIntent(from: title)
-        let observedSegments = TimelineDeriver.observeSegments(segments, goal: title)
-        let observability = TimelineDeriver.summarizeObservedSegments(observedSegments)
-        let goalSpecificity = goalSpecificityLabel(for: title, intent: intent)
-        let directEntities = dominantObservedEntityLabels(from: observedSegments, role: .direct)
-        let supportEntities = dominantObservedEntityLabels(from: observedSegments, role: .support)
-        let driftEntities = dominantObservedEntityLabels(from: observedSegments, role: .drift)
-        let breakEntities = dominantObservedEntityLabels(from: observedSegments, role: .breakTime)
-        let allowedMentions = allowedEvidenceMentions(from: segments, events: events, calendarTitles: calendarTitles)
+        let coreEvents = events.filter { !$0.kind.isFocusGuardSignal }
+        let allowedMentions = allowedEvidenceMentions(from: segments, events: coreEvents)
         let factPack = sessionPromptFactPack(from: segments)
+        let reviewStats = sessionReviewStats(from: segments)
+        let promptTopApps = promptTopApps(from: coreEvents)
         let evidence = SessionEvidenceSummary(
-            topApps: topCounts(events.compactMap(\.appName), limit: 6),
-            topTitles: topCounts((events.compactMap(\.windowTitle) + events.compactMap(\.resourceTitle)), limit: 8),
-            topURLs: topCounts((events.compactMap(\.resourceURL) + events.compactMap(\.domain)), limit: 6),
-            topPaths: topCounts((events.compactMap(\.path) + events.compactMap(\.workingDirectory)), limit: 6),
-            commands: Array(events.compactMap(\.command).orderedUnique().prefix(8)),
-            clipboardPreviews: Array(events.compactMap(\.clipboardPreview).orderedUnique().prefix(3)),
-            quickNotes: Array(events.compactMap(\.noteText).orderedUnique().prefix(4)),
-            calendarTitles: calendarTitles,
+            topApps: promptTopApps,
+            topTitles: topCounts((coreEvents.compactMap(\.windowTitle) + coreEvents.compactMap(\.resourceTitle)).map(cleanedTitleLabel), limit: 8),
+            topURLs: topCounts((coreEvents.compactMap(\.resourceURL) + coreEvents.compactMap(\.domain)).map(readableReviewLocationLabel), limit: 6),
+            topPaths: topCounts((coreEvents.compactMap(\.path) + coreEvents.compactMap(\.workingDirectory)), limit: 6),
+            commands: Array(coreEvents.compactMap(\.command).orderedUnique().prefix(8)),
+            clipboardPreviews: Array(coreEvents.compactMap(\.clipboardPreview).orderedUnique().prefix(3)),
+            quickNotes: Array(coreEvents.compactMap(\.noteText).orderedUnique().prefix(4)),
             trace: []
         )
 
@@ -250,215 +344,135 @@ enum AIProviderBridge: LocalReviewProvider {
             return "- \(interval): \(descriptor)\(details.isEmpty ? "" : " [\(details)]")"
         }.joined(separator: "\n")
 
-        let observedLines = observedSegments.prefix(12).map { observed in
-            let segment = observed.segment
-            let interval = ActivityFormatting.sessionTime.string(from: segment.startAt, to: segment.endAt)
-            let descriptor = [segment.appName, segment.primaryLabel, segment.secondaryLabel].compactMap { $0 }.joined(separator: " · ")
-            return "- \(interval): \(observed.role.rawValue) relevance=\(String(format: "%.2f", observed.goalRelevance)) \(descriptor) — \(observed.rationale)"
-        }.joined(separator: "\n")
-
         return """
-        <role>
-        You are writing a short, useful session recap from local desktop evidence.
-        Write like a perceptive friend who watched the block and is telling the person what actually happened.
-        The person's first name is \(personName?.nilIfBlank ?? "unknown").
-        </role>
+        Write a sharp, human review of one desktop session from local evidence.
+        You are not here to be polite. You are here to say what actually dominated the block.
 
-        <output_contract>
-        Return exactly four lines:
-        VERDICT: matched|partially_matched|missed
-        HEADLINE: ...
-        RECAP: ...
-        TAKEAWAY: ...
-        </output_contract>
+        Return only one JSON object with exactly these keys:
+        - headline
+        - summary
+        - insight
 
-        <style_rules>
-        - Use second person only.
-        - Never say "the user", "they", or "\(personName?.nilIfBlank ?? "the person's") session".
-        - Never use the person's name anywhere in the output.
-        - Do not start the headline with "you,".
-        - Do not start the headline with "This block", "During this session", or "You spent".
-        - Do not use colons in the headline.
-        - The headline should read like a short review title for this exact session, not a generic template.
-        - The headline should name the dominant outcome, thread, or failure mode of the session.
-        - Headline under 12 words.
-        - RECAP under 48 words.
-        - TAKEAWAY under 20 words.
-        - Write at about an eighth-grade reading level.
-        - Use short, plain sentences.
-        - Every sentence should teach the reader something concrete.
-        - Sound direct, specific, and human.
-        - Do not use internal scoring language or classifier words.
-        - Do not quote the goal text back unless it is essential.
-        - Do not emit markdown, HTML, XML, bullets, or extra commentary.
-        - Never mention any app, site, repo, file, video, song, page, or person unless it appears in the allowed mentions or raw evidence below.
-        - You may use light markdown emphasis when helpful:
-          - *italics* for titles like songs, videos, or page names
-          - **bold** for a key point
-          - `code` for repo names, file names, or paths
-        - Use emphasis sparingly.
-        </style_rules>
+        Rules:
+        - Use second person.
+        - Never use the person's name.
+        - Address the person directly as "you" or "your".
+        - `headline` and `summary` must do different jobs.
+        - Headline under 14 words and no colon.
+        - `headline` must be a judgment about the block, not a literal activity label.
+        - Do not use a bare activity phrase like "Watching YouTube videos" or "Using Chrome" as the headline.
+        - Prefer headlines with strong judgment words like "took", "won", "pulled", "owned", "never became", or "stayed in".
+        - `summary` may be one or two sentences and should stay under 55 words.
+        - `summary` must add concrete evidence that is not already stated in the headline.
+        - `summary` must include:
+          1. the dominant surface or app
+          2. at least one numeric fact from the computed facts below
+          3. one concrete title, page, or surface when available
+          4. the work surface that lost, when it is visible
+        - Do not restate the headline with light paraphrasing.
+        - `summary` renders directly in the UI. Do not output XML, HTML, app tags, link tags, code fences, JSON inside strings, or raw URLs.
+        - Plain markdown is allowed, but use it lightly.
+        - If the evidence supports it, include the dominant time split in minutes or percent.
+        - If the dominant app or site is clear, name it plainly in the sentence.
+        - If a specific video, page, or document title is visible in the evidence, include it plainly.
+        - If the title is generic, missing, or redacted, do not guess.
+        - If the same block includes both browser-shell facts and site facts, trust the site facts and ignore the browser shell.
+        - `insight` must be exactly one sentence and under 18 words.
+        - `insight` must be a concrete correction or rule, not gentle advice.
+        - `insight` must be actionable right away, not just observational.
+        - Prefer a stop-and-replace rule: stop one behavior and name the next surface or order to use instead.
+        - If the block drifted to YouTube, X, passive media, or unrelated browsing, `insight` should say what to cut or close next.
+        - If the block partly matched the goal, `insight` should say what to keep and what to remove.
+        - `insight` must move toward the stated goal, not deeper into the distraction.
+        - Never tell the person to continue scrolling, watching, or browsing a distraction surface unless the goal explicitly asked for that same surface.
+        - For vague goals, default the replacement action toward planning, coding, writing, or the visible work tool, not the distraction.
+        - Good insight: "Do not open X before Codex."
+        - Good insight: "Close YouTube and reopen Codex."
+        - Good insight: "Start in Codex, then check mail after the block."
+        - Good insight: "Close YouTube and go straight to Codex."
+        - Bad insight: "Complete the X feed review first."
+        - Bad insight: "Close YouTube before the next block."
+        - Bad insight: "Maintain focus on your primary tasks."
+        - Bad insight: "Refocus on the task in Codex."
+        - Bad insight: "Return to your main goal."
+        - Use short, plain English.
+        - Mention only concrete things that appear in the evidence.
+        - Mention at least one concrete app, site, or tool from the evidence in `summary` when one is available.
+        - Prefer the most specific surface available: named page, feed, document, or video title first; then site; then app shell.
+        - If a browser site like YouTube or X already explains the block, do not mention Chrome or Safari in the summary.
+        - Mention Chrome or Safari only when no site, feed, page, or video label is available.
+        - Avoid raw domain spellings like youtube.com or x.com in the answer. Use plain product names instead.
+        - `insight` must act on the same dominant distraction or winning surface already named in the headline or summary.
+        - Do not introduce a new app or site in `insight` unless it clearly consumed more time than the named distraction.
+        - Good `summary` example: "YouTube took about 4 of 5 minutes, mainly on Taylor Swift interview clips, while Codex barely appeared."
+        - Good `summary` example: "X held 68% of the block, mostly on the Home feed, while Codex only appeared briefly."
+        - Bad `summary` example: "You spent the session primarily browsing social media."
+        - Bad `summary` example: "The session involved content on several surfaces."
+        - Keep `insight` plain text.
+        - Do not output badges, extra keys, XML, code fences, or commentary outside the JSON object.
+        - Do not mention instructions, examples, feedback machinery, scores, or hidden reasoning.
+        - Judge the block against the stated goal, not generic productivity.
+        - Do not classify by app name alone. A browser, YouTube, X, or Codex can be on-goal if the visited content supports the goal.
+        - Treat the computed facts below as source of truth for timing, ordering, and dominance.
+        - Use the goal plus the specific surfaces, titles, pages, and timing facts to decide what actually dominated the session.
+        - If the goal is broad, describe the dominant thread instead of overselling success.
+        - Never imply one app performed an action that happened on another site or surface.
+        - If YouTube and Codex both appear, say which one dominated and how long each held the session.
+        - If LogBook only appears as a quick app switch or review surface, keep it secondary.
+        - Do not say "you spent the session", "primarily", "content", "main goal", "returning to your main goal", or "refocus on".
+        - Never say "desktop activity", "during this time period", "desired focus work", "stated goal", or "lack of concentration".
+        - Bad headline: "Watching YouTube videos"
+        - Good headline: "You got pulled into YouTube"
+        - Bad headline: "Session summary"
+        - Good headline: "X took this block"
 
-        <decision_rules>
-        - Judge the block against the person's own intent, not generic productivity.
-        - If the goal was to watch, browse, listen, or consume something, then doing that can count as matched.
-        - If the goal was broad or fuzzy, do not pretend you know the real outcome. Say the outcome is unclear when needed.
-        - For broad goals, prefer describing the dominant threads of the block over claiming success or failure.
-        - Prefer what was actually viewed or worked on over the browser or app shell.
-        - If a concrete title, repo, file, or page clearly mattered, mention it.
-        - If the session bounced between tools without a clear artifact, say that plainly.
-        - Name only things present in the evidence.
-        - Avoid repeating the same app or site name multiple times.
-        - Before answering, check that every concrete noun you mention is present in the evidence.
-        - If music or media was visible, say what it was and about how long it stayed visible.
-        - If a site or page was visible, say what it was and about how long it took.
-        - If something only appeared briefly, call it brief.
-        </decision_rules>
+        Goal: \(title)
+        Time: \(ActivityFormatting.shortTime.string(from: startedAt)) to \(ActivityFormatting.shortTime.string(from: endedAt))
 
-        <examples>
-        <example>
-        <input>
-        goal: Help me get my day ready
-        evidence: Codex, Spotify, WhatsApp, Log Book
-        </input>
-        <output>
-        VERDICT: partially_matched
-        HEADLINE: Setup time got split with music.
-        RECAP: You spent about **2 minutes** in Codex, under a minute in Log Book, and almost **2 minutes** with Spotify visible, mostly on *BTS - 2.0*. WhatsApp interrupted the block briefly near the end.
-        TAKEAWAY: You stayed near your setup tools, but the session never settled into a **clear day-prep run**.
-        </output>
-        </example>
+        Earlier feedback hints:
+        \(reviewLearnings.isEmpty ? "- none" : reviewLearnings.prefix(4).map { "- \($0)" }.joined(separator: "\n"))
 
-        <example>
-        <input>
-        bad output pattern
-        </input>
-        <output>
-        Bad: Jordan moved between work tools and media during preparation.
-        Good: Work tools and media kept trading places.
-        </output>
-        </example>
+        Session facts:
+        - Total session length: \(naturalDurationLabel(for: reviewStats.totalSeconds))
+        - Surface switches: \(reviewStats.switchCount)
+        - Unique surfaces: \(reviewStats.uniqueSurfaceCount)
+        - Dominant surface: \(reviewStats.dominantSurface ?? "none")
+        - Dominant surface share: \(reviewStats.dominantSurfaceShare)
+        - Longest continuous run: \(reviewStats.longestRunLabel ?? "none")
+        - Top surfaces:
+        \(reviewStats.topSurfaces.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+        - Top apps:
+        \(reviewStats.topApps.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+        - Top page titles:
+        \(reviewStats.topTitles.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+        - Opening sequence:
+        \(reviewStats.openingSequence.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+        - Closing sequence:
+        \(reviewStats.closingSequence.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
 
-        <example>
-        <input>
-        allowed mentions: Codex, Log Book, Spotify, WhatsApp
-        </input>
-        <output>
-        Bad: YouTube took over the block.
-        Good: You moved between Codex, Log Book, Spotify, and WhatsApp.
-        </output>
-        </example>
-
-        <example>
-        <input>
-        goal: I wanna just watch YouTube
-        evidence: YouTube watch page, one short X detour
-        </input>
-        <output>
-        VERDICT: matched
-        HEADLINE: YouTube stayed front and center.
-        RECAP: You spent most of the block on YouTube and only dipped into X briefly.
-        TAKEAWAY: The session **matched the goal**, with only a small detour.
-        </output>
-        </example>
-
-        <example>
-        <input>
-        goal: deploy logbook to github
-        evidence: Codex, GitHub auth/session pages, acme/logbook, YouTube Shorts
-        </input>
-        <output>
-        VERDICT: partially_matched
-        HEADLINE: GitHub showed up, but YouTube won.
-        RECAP: You reached GitHub and `acme/logbook`, but YouTube still took more of the block than the deployment path did.
-        TAKEAWAY: You did touch the task, but it never became the **main thread**.
-        </output>
-        </example>
-        </examples>
-
-        <review_learnings>
-        These are weak hints learned from earlier feedback. They help with framing, but current session evidence always wins.
-        \(reviewLearnings.isEmpty ? "- none" : reviewLearnings.prefix(6).map { "- \($0)" }.joined(separator: "\n"))
-        </review_learnings>
-
-        <review_feedback_examples>
-        These are earlier examples of what the app said and how the person reacted.
-        Use them as grounding references, not templates to copy.
-        \(feedbackExamplesPromptBlock(feedbackExamples))
-        </review_feedback_examples>
-
-        <session>
-        <goal>\(title)</goal>
-        <time>\(ActivityFormatting.shortTime.string(from: startedAt)) to \(ActivityFormatting.shortTime.string(from: endedAt))</time>
-        <goal_specificity>\(goalSpecificity)</goal_specificity>
-        <intent>
-        mode: \(intent.mode.rawValue)
-        action: \(intent.action ?? "unknown")
-        targets: \(intent.targets.joined(separator: " | ").nilIfBlank ?? "none")
-        objects: \(intent.objects.joined(separator: " | ").nilIfBlank ?? "none")
-        confidence: \(String(format: "%.2f", intent.confidence))
-        </intent>
-
-        <derived_facts>
-        goal_related_time: \(shortDurationLabel(for: observability.directSeconds))
-        nearby_time: \(shortDurationLabel(for: observability.supportSeconds))
-        detour_time: \(shortDurationLabel(for: observability.driftSeconds))
-        break_time: \(shortDurationLabel(for: observability.breakSeconds))
-        longest_goal_related_run: \(shortDurationLabel(for: observability.longestDirectRunSeconds))
-        detour_interruptions: \(observability.driftInterruptions)
-        dominant_goal_related_entities: \(directEntities.joined(separator: " | ").nilIfBlank ?? "none")
-        dominant_nearby_entities: \(supportEntities.joined(separator: " | ").nilIfBlank ?? "none")
-        dominant_detours: \(driftEntities.joined(separator: " | ").nilIfBlank ?? "none")
-        dominant_break_context: \(breakEntities.joined(separator: " | ").nilIfBlank ?? "none")
-        frontmost_breakdown:
-        \(factPack.frontmostBreakdown.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
-        visible_media:
+        Visible media:
         \(factPack.visibleMedia.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
-        visible_sites:
+
+        Visible sites:
         \(factPack.visibleSites.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
-        brief_interruptions:
+
+        Brief interruptions:
         \(factPack.briefInterruptions.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
-        likely_background_context:
-        \(factPack.backgroundContext.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
-        </derived_facts>
 
-        <raw_timeline>
-        \(segmentLines.isEmpty ? "- none" : segmentLines)
-        </raw_timeline>
-
-        <raw_observations>
-        \(observedLines.isEmpty ? "- none" : observedLines)
-        </raw_observations>
-
-        <allowed_mentions>
+        Allowed mentions:
         \(allowedMentions.isEmpty ? "- none" : allowedMentions.map { "- \($0)" }.joined(separator: "\n"))
-        </allowed_mentions>
 
-        <raw_evidence>
-        apps: \(evidence.topApps.joined(separator: ", ").nilIfBlank ?? "none")
-        titles: \(evidence.topTitles.joined(separator: " | ").nilIfBlank ?? "none")
-        urls_or_domains: \(evidence.topURLs.joined(separator: " | ").nilIfBlank ?? "none")
-        paths: \(evidence.topPaths.joined(separator: " | ").nilIfBlank ?? "none")
-        commands: \(evidence.commands.joined(separator: " | ").nilIfBlank ?? "none")
-        clipboard: \(evidence.clipboardPreviews.joined(separator: " | ").nilIfBlank ?? "none")
-        quick_notes: \(evidence.quickNotes.joined(separator: " | ").nilIfBlank ?? "none")
-        calendar: \(calendarTitles.joined(separator: " | ").nilIfBlank ?? "none")
-        </raw_evidence>
-        </session>
+        Recent timeline:
+        \(segmentLines.isEmpty ? "- none" : segmentLines)
 
-        <task>
-        Write the four required lines using both the derived facts and the raw evidence.
-        The derived facts are guidance, not a script. Use the raw evidence to decide what actually mattered.
-        Use review_learnings as weak framing hints.
-        Use review_feedback_examples as examples of what this person thought was right or wrong.
-        Do not repeat old example wording unless it truly fits the current session.
-        Do not let one old correction dominate the current session.
-        HEADLINE should feel like the one-line title of the session review card.
-        HEADLINE should be specific enough that someone could tell this session apart from another one.
-        RECAP should explain what happened with concrete things and rough durations.
-        TAKEAWAY should be one plain sentence about what the block adds up to.
-        Return only the four required lines. Do not add anything before or after them.
-        </task>
+        Evidence:
+        - Apps: \(evidence.topApps.joined(separator: ", ").nilIfBlank ?? "none")
+        - Titles: \(evidence.topTitles.joined(separator: " | ").nilIfBlank ?? "none")
+        - URLs or domains: \(evidence.topURLs.joined(separator: " | ").nilIfBlank ?? "none")
+        - Paths: \(evidence.topPaths.joined(separator: " | ").nilIfBlank ?? "none")
+        - Commands: \(evidence.commands.joined(separator: " | ").nilIfBlank ?? "none")
+        - Clipboard: \(evidence.clipboardPreviews.joined(separator: " | ").nilIfBlank ?? "none")
+        - Notes: \(evidence.quickNotes.joined(separator: " | ").nilIfBlank ?? "none")
         """
     }
 }
@@ -474,6 +488,83 @@ private func feedbackExamplesPromptBlock(_ examples: [SessionReviewFeedbackExamp
           Label: \(example.label.rawValue)
         """
     }.joined(separator: "\n")
+}
+
+private func focusGuardNudgePrompt(
+    goal: String,
+    assessmentReason: String,
+    driftLabels: [String],
+    matchedLabels: [String],
+    events: [ActivityEvent]
+) -> String {
+    let factPack = sessionPromptFactPack(from: TimelineDeriver.deriveSegments(from: events, sessionEnd: events.last?.occurredAt ?? Date()))
+    let titles = topCounts((events.compactMap(\.windowTitle) + events.compactMap(\.resourceTitle)).map(cleanedTitleLabel), limit: 4)
+    let sites = topCounts((events.compactMap(\.domain) + events.compactMap(\.resourceURL)), limit: 4)
+
+    return """
+    Write one short Mac notification sentence for a focus app.
+
+    Goal: \(goal)
+    Drift surfaces: \(driftLabels.joined(separator: " | ").nilIfBlank ?? "none")
+    Work surfaces: \(matchedLabels.joined(separator: " | ").nilIfBlank ?? "none")
+    Assessment: \(assessmentReason)
+
+    Visible media:
+    \(factPack.visibleMedia.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+
+    Visible sites:
+    \(factPack.visibleSites.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+
+    Recent titles:
+    \(titles.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+
+    Recent sites:
+    \(sites.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+
+    Rules:
+    - One sentence only.
+    - Max 14 words.
+    - Use second person.
+    - Mention the distraction directly.
+    - Point back to the goal or main work surface.
+    - No motivational language.
+    - No generic phrases like stay focused, maintain focus, primary tasks, or get back on track.
+    - No colon. No quotes. No markdown.
+    - Return only the sentence.
+
+    Good: You drifted to YouTube. Back to the Codex block?
+    Good: Gemini took over this block. Back to shipping in Codex?
+    Bad: Maintain focus on your primary tasks.
+    """
+}
+
+private func parseFocusGuardNudge(from output: String) throws -> String {
+    let line = output
+        .split(whereSeparator: \.isNewline)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .first { !$0.isEmpty }
+        .map { String($0) }?
+        .trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”‘’ ").union(.whitespacesAndNewlines))
+        ?? ""
+
+    let cleaned = line
+        .replacingOccurrences(of: #"\s+"#, with: " ", options: NSString.CompareOptions.regularExpression)
+        .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+
+    guard !cleaned.isEmpty else {
+        throw OllamaError.invalidReview("The local model returned an empty focus nudge.")
+    }
+    if let leakedPhrase = leakedPromptPhrase(in: [cleaned]) {
+        throw OllamaError.invalidReview("The local model echoed nudge instructions (\(leakedPhrase)).")
+    }
+    if let invalidPhrase = invalidGenericReviewPhrase(in: [cleaned]) {
+        throw OllamaError.invalidReview("The local model returned generic nudge copy (\(invalidPhrase)).")
+    }
+    guard cleaned.split(separator: " ").count <= 14 else {
+        throw OllamaError.invalidReview("The local model returned a focus nudge that was too long.")
+    }
+
+    return cleaned
 }
 
 private func feedbackLearningPrompt(personName: String?, feedbackExamples: [SessionReviewFeedbackExample]) -> String {
@@ -552,8 +643,7 @@ private func goalSpecificityLabel(for goal: String, intent: SessionIntent) -> St
 
 private func allowedEvidenceMentions(
     from segments: [TimelineSegment],
-    events: [ActivityEvent],
-    calendarTitles: [String]
+    events: [ActivityEvent]
 ) -> [String] {
     var mentions: [String] = []
     var seen: Set<String> = []
@@ -580,117 +670,14 @@ private func allowedEvidenceMentions(
         append(cleanedTitleLabel(title))
     }
 
-    for calendarTitle in calendarTitles {
-        append(calendarTitle)
-    }
-
     return Array(mentions.prefix(30))
 }
 
-private func normalizedSecondPersonText(_ text: String) -> String {
-    var value = text
-    let replacements: [(String, String)] = [
-        ("The user", "You"),
-        ("the user", "you"),
-        ("User", "You"),
-        ("user", "you"),
-        ("They ", "You "),
-        ("they ", "you "),
-        ("Their ", "Your "),
-        ("their ", "your "),
-        ("Them ", "You "),
-        ("them ", "you "),
-    ]
-
-    for (source, target) in replacements {
-        value = value.replacingOccurrences(of: source, with: target)
-    }
-
-    return value
-}
-
-private func normalizedReviewText(_ text: String, personName: String?) -> String {
-    var value = normalizedSecondPersonText(text)
-
-    if let personName = personName?.trimmingCharacters(in: .whitespacesAndNewlines),
-       !personName.isEmpty {
-        let escapedName = NSRegularExpression.escapedPattern(for: personName)
-        let patterns: [(String, String)] = [
-            ("\\b\(escapedName)'s\\s+session\\b", "Your session"),
-            ("\\b\(escapedName)'s\\b", "your"),
-            ("\\b\(escapedName)\\b", "you"),
-        ]
-
-        for (pattern, replacement) in patterns {
-            value = value.replacingOccurrences(
-                of: pattern,
-                with: replacement,
-                options: [.regularExpression, .caseInsensitive]
-            )
-        }
-    }
-
-    let genericReplacements: [(String, String)] = [
-        ("\\bthe stated goal\\b", "what you meant to do"),
-        ("\\blimited progress on what you meant to do\\b", "only partly matched what you meant to do"),
-        ("\\blimited progress on the goal\\b", "only partly matched what you meant to do"),
-        ("\\blimited progress toward the goal\\b", "only partly matched what you meant to do"),
-        ("\\blimited progress towards the goal\\b", "only partly matched what you meant to do"),
-    ]
-
-    for (pattern, replacement) in genericReplacements {
-        value = value.replacingOccurrences(
-            of: pattern,
-            with: replacement,
-            options: [.regularExpression, .caseInsensitive]
-        )
-    }
-
-    let cleanupPatterns: [(String, String)] = [
-        (#"^\s*you,\s*this block\b"#, "This block"),
-        (#"^\s*you,\s*"#, "You "),
-        (#"^\s*,+\s*"#, ""),
-        (#"\n\s*,\s*\n"#, "\n"),
-        (#"\s+([,.;:])"#, "$1"),
-        (#"\s{2,}"#, " "),
-    ]
-
-    for (pattern, replacement) in cleanupPatterns {
-        value = value.replacingOccurrences(
-            of: pattern,
-            with: replacement,
-            options: [.regularExpression]
-        )
-    }
-
-    if let first = value.first, String(first) == "y" {
-        value.replaceSubrange(value.startIndex...value.startIndex, with: "Y")
-    }
-
-    return value.trimmingCharacters(in: .whitespacesAndNewlines)
-}
-
-private func sanitizedReviewHeadline(_ text: String, goal: String) -> String {
-    var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-
-    let timePrefixPattern = #"^\s*\d{1,2}:\d{2}\s?(?:AM|PM|am|pm)\s*[-–—]\s*\d{1,2}:\d{2}\s?(?:AM|PM|am|pm)\s*:?\s*"#
-    value = value.replacingOccurrences(
-        of: timePrefixPattern,
-        with: "",
-        options: .regularExpression
-    )
-
-    if value.hasSuffix(".") {
-        value.removeLast()
-    }
-
-    let normalizedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !normalizedGoal.isEmpty,
-       value.caseInsensitiveCompare(normalizedGoal) == .orderedSame {
-        return "This block needs a clearer review."
-    }
-
-    return value.trimmingCharacters(in: .whitespacesAndNewlines)
+private func allowedReviewEntities(
+    from segments: [TimelineSegment],
+    events: [ActivityEvent]
+) -> [ReviewEntityDefinition] {
+    ReviewEntityRegistry.allowedEntities(from: segments, events: events)
 }
 
 private func shortDurationLabel(for seconds: Int) -> String {
@@ -714,14 +701,151 @@ private struct SessionPromptFactPack {
     let backgroundContext: [String]
 }
 
-private func sessionPromptFactPack(from segments: [TimelineSegment]) -> SessionPromptFactPack {
+private struct SessionReviewStats {
+    let totalSeconds: Int
+    let switchCount: Int
+    let uniqueSurfaceCount: Int
+    let dominantSurface: String?
+    let dominantSurfaceShare: String
+    let longestRunLabel: String?
+    let topSurfaces: [String]
+    let topApps: [String]
+    let topTitles: [String]
+    let openingSequence: [String]
+    let closingSequence: [String]
+}
+
+private func sessionReviewStats(from segments: [TimelineSegment]) -> SessionReviewStats {
     struct Aggregate {
         var label: String
         var seconds: Int
     }
 
-    func segmentSeconds(_ segment: TimelineSegment) -> Int {
-        max(Int(segment.endAt.timeIntervalSince(segment.startAt).rounded()), 1)
+    let totalSeconds = max(segments.reduce(0) { $0 + segmentDurationSeconds($1) }, 1)
+
+    func aggregate(
+        matching predicate: (TimelineSegment) -> Bool = { _ in true },
+        label: (TimelineSegment) -> String,
+        limit: Int
+    ) -> [String] {
+        var buckets: [String: Aggregate] = [:]
+
+        for segment in segments where predicate(segment) {
+            let rawLabel = label(segment).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rawLabel.isEmpty else { continue }
+            var aggregate = buckets[rawLabel] ?? Aggregate(label: rawLabel, seconds: 0)
+            aggregate.seconds += segmentDurationSeconds(segment)
+            buckets[rawLabel] = aggregate
+        }
+
+        return buckets.values
+            .sorted { lhs, rhs in
+                if lhs.seconds == rhs.seconds {
+                    return lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
+                }
+                return lhs.seconds > rhs.seconds
+            }
+            .prefix(limit)
+            .map { aggregate in
+                let share = Int((Double(aggregate.seconds) / Double(totalSeconds) * 100).rounded())
+                return "\(aggregate.label) — \(naturalDurationLabel(for: aggregate.seconds)) (\(share)%)"
+            }
+    }
+
+    let topSurfaces = aggregate(
+        label: { segment in
+            if let secondary = segment.secondaryLabel, !secondary.isEmpty, secondary != segment.primaryLabel {
+                return "\(segment.primaryLabel) · \(secondary)"
+            }
+            return segment.primaryLabel
+        },
+        limit: 4
+    )
+
+    let topApps = aggregate(
+        matching: { segment in
+            !isBrowserShellApp(segment.appName) || !segmentHasWebContext(segment)
+        },
+        label: \.appName,
+        limit: 4
+    )
+
+    let topTitles = aggregate(
+        matching: { ($0.secondaryLabel?.isEmpty == false) || ($0.domain?.isEmpty == false) },
+        label: { segment in
+            if let secondary = segment.secondaryLabel, !secondary.isEmpty {
+                return secondary
+            }
+            return segment.primaryLabel
+        },
+        limit: 4
+    )
+
+    let dominantSurfaceAggregate = topSurfaces.first
+    let dominantSurface = dominantSurfaceAggregate?.components(separatedBy: " — ").first
+    let dominantSurfaceShare = dominantSurfaceAggregate?
+        .components(separatedBy: " (")
+        .last?
+        .trimmingCharacters(in: CharacterSet(charactersIn: ")"))
+        ?? "0%"
+
+    let longestSegment = segments.max { segmentDurationSeconds($0) < segmentDurationSeconds($1) }
+    let longestRunLabel = longestSegment.map { segment in
+        "\(segment.primaryLabel) for \(naturalDurationLabel(for: segmentDurationSeconds(segment)))"
+    }
+
+    func sequenceLine(for segment: TimelineSegment) -> String {
+        let primary = segment.primaryLabel
+        let secondary = segment.secondaryLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let descriptor = [primary, secondary].compactMap { value in
+            guard let value, !value.isEmpty, value != primary else { return nil }
+            return value
+        }.joined(separator: " · ")
+        let label = descriptor.isEmpty ? primary : descriptor
+        return "\(label) — \(naturalDurationLabel(for: segmentDurationSeconds(segment)))"
+    }
+
+    let openingSequence = Array(segments.prefix(3)).map { sequenceLine(for: $0) }
+    let closingSequence = Array(segments.suffix(3)).map { sequenceLine(for: $0) }
+
+    return SessionReviewStats(
+        totalSeconds: totalSeconds,
+        switchCount: max(segments.count - 1, 0),
+        uniqueSurfaceCount: Set(segments.map { "\($0.appName)|\($0.primaryLabel)|\($0.secondaryLabel ?? "")" }).count,
+        dominantSurface: dominantSurface,
+        dominantSurfaceShare: dominantSurfaceShare,
+        longestRunLabel: longestRunLabel,
+        topSurfaces: topSurfaces,
+        topApps: topApps,
+        topTitles: topTitles,
+        openingSequence: openingSequence,
+        closingSequence: closingSequence
+    )
+}
+
+private func segmentDurationSeconds(_ segment: TimelineSegment) -> Int {
+    max(Int(segment.endAt.timeIntervalSince(segment.startAt).rounded()), 1)
+}
+
+private func promptTopApps(from events: [ActivityEvent]) -> [String] {
+    let hasWebContext = events.contains { event in
+        (event.domain?.isEmpty == false) || (event.resourceURL?.isEmpty == false)
+    }
+
+    let appNames = events.compactMap(\.appName).filter { appName in
+        if hasWebContext && isBrowserShellApp(appName) {
+            return false
+        }
+        return true
+    }
+
+    return topCounts(appNames, limit: 6)
+}
+
+private func sessionPromptFactPack(from segments: [TimelineSegment]) -> SessionPromptFactPack {
+    struct Aggregate {
+        var label: String
+        var seconds: Int
     }
 
     func aggregate(
@@ -734,7 +858,7 @@ private func sessionPromptFactPack(from segments: [TimelineSegment]) -> SessionP
             let key = label(segment).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty else { continue }
             var current = buckets[key] ?? Aggregate(label: key, seconds: 0)
-            current.seconds += segmentSeconds(segment)
+            current.seconds += segmentDurationSeconds(segment)
             buckets[key] = current
         }
 
@@ -782,10 +906,10 @@ private func sessionPromptFactPack(from segments: [TimelineSegment]) -> SessionP
     )
 
     let briefInterruptions = segments
-        .filter { segmentSeconds($0) <= 30 }
+        .filter { segmentDurationSeconds($0) <= 30 }
         .map { segment in
             let label = segment.primaryLabel == segment.appName ? segment.appName : segment.primaryLabel
-            return "\(label) — \(naturalDurationLabel(for: segmentSeconds(segment)))"
+            return "\(label) — \(naturalDurationLabel(for: segmentDurationSeconds(segment)))"
         }
         .orderedUnique()
         .prefix(4)
@@ -889,6 +1013,7 @@ enum OllamaError: LocalizedError {
     case invalidBaseURL
     case remoteHostsForbidden
     case missingModel
+    case invalidReview(String)
 
     var errorDescription: String? {
         switch self {
@@ -898,6 +1023,8 @@ enum OllamaError: LocalizedError {
             return "Only local Ollama hosts are allowed. Use localhost or 127.0.0.1."
         case .missingModel:
             return "Select an Ollama model in Settings before generating reviews."
+        case let .invalidReview(message):
+            return message
         }
     }
 }
@@ -915,75 +1042,149 @@ private struct OllamaGenerateRequest: Encodable {
     let model: String
     let prompt: String
     let stream: Bool
+    let format: OllamaResponseFormat?
 }
 
 private struct OllamaGenerateResponse: Decodable {
     let response: String
 }
 
-private struct LocalSessionReviewPayload {
+private enum OllamaResponseFormat: Encodable {
+    case json
+    case jsonSchema(OllamaJSONSchema)
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .json:
+            try container.encode("json")
+        case let .jsonSchema(schema):
+            try container.encode(schema)
+        }
+    }
+}
+
+private struct OllamaJSONSchema: Encodable {
+    let type: String
+    let properties: [String: OllamaJSONSchemaProperty]
+    let required: [String]
+    let additionalProperties: Bool
+
+    static let sessionReview = OllamaJSONSchema(
+        type: "object",
+        properties: [
+            "headline": OllamaJSONSchemaProperty(
+                type: "string",
+                description: "Short review title. Under 12 words."
+            ),
+            "summary": OllamaJSONSchemaProperty(
+                type: "string",
+                description: "Plain text summary of what happened in the session. Under 48 words."
+            ),
+            "insight": OllamaJSONSchemaProperty(
+                type: "string",
+                description: "One sharp insight or recommendation that adds interpretation, not repetition."
+            ),
+        ],
+        required: ["headline", "summary", "insight"],
+        additionalProperties: false
+    )
+}
+
+private final class OllamaJSONSchemaProperty: Encodable {
+    let type: String
+    let description: String?
+    let properties: [String: OllamaJSONSchemaProperty]?
+    let items: OllamaJSONSchemaProperty?
+    let required: [String]?
+    let additionalProperties: Bool?
+    let enumValues: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case description
+        case properties
+        case items
+        case required
+        case additionalProperties
+        case enumValues = "enum"
+    }
+
+    init(
+        type: String,
+        description: String? = nil,
+        properties: [String: OllamaJSONSchemaProperty]? = nil,
+        items: OllamaJSONSchemaProperty? = nil,
+        required: [String]? = nil,
+        additionalProperties: Bool? = nil,
+        enumValues: [String]? = nil
+    ) {
+        self.type = type
+        self.description = description
+        self.properties = properties
+        self.items = items
+        self.required = required
+        self.additionalProperties = additionalProperties
+        self.enumValues = enumValues
+    }
+}
+
+private struct StructuredSessionReviewPayload: Decodable {
     let headline: String
-    let verdict: SessionVerdict
-    let recap: String
-    let takeaway: String
+    let summary: String
+    let insight: String
+
+    enum CodingKeys: String, CodingKey {
+        case headline
+        case summary
+        case insight
+    }
+}
+
+private struct ParsedStructuredSessionReviewPayload {
+    let headline: String
+    let summary: String
+    let insight: String
+}
+
+private func parseStructuredSessionReviewPayload(from text: String) throws -> ParsedStructuredSessionReviewPayload {
+    let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}") else {
+        throw OllamaError.invalidReview("The local model did not return valid JSON.")
+    }
+
+    let jsonString = String(raw[start...end])
+    let data = Data(jsonString.utf8)
+    let payload = try JSONDecoder().decode(StructuredSessionReviewPayload.self, from: data)
+
+    guard !payload.headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw OllamaError.invalidReview("The local model returned an empty headline.")
+    }
+    guard !payload.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw OllamaError.invalidReview("The local model returned an empty summary.")
+    }
+    guard !payload.insight.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw OllamaError.invalidReview("The local model returned an empty insight.")
+    }
+
+    return ParsedStructuredSessionReviewPayload(
+        headline: payload.headline,
+        summary: payload.summary,
+        insight: payload.insight
+    )
+}
+
+private func shouldInsertSpaceInPlainSummary(existing: String, next: String) -> Bool {
+    guard let last = existing.last, let first = next.first else { return false }
+    if last.isWhitespace || first.isWhitespace { return false }
+    if ",.;:!?)]}".contains(first) { return false }
+    if "([{/".contains(last) { return false }
+    if last == "#" || first == "#" { return false }
+    return true
 }
 
 private struct LearningMemoryPayload: Decodable {
     let learnings: [String]
-}
-
-private func parsePlainTextReviewPayload(from text: String) -> LocalSessionReviewPayload {
-    let lines = text
-        .split(whereSeparator: \.isNewline)
-        .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty }
-
-    var verdict: SessionVerdict?
-    var headline: String?
-    var recap: String?
-    var takeaway: String?
-
-    for line in lines {
-        if line.uppercased().hasPrefix("VERDICT:") {
-            let value = String(line.dropFirst("VERDICT:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            verdict = normalizedVerdict(from: value)
-            continue
-        }
-        if line.uppercased().hasPrefix("HEADLINE:") {
-            headline = String(line.dropFirst("HEADLINE:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            continue
-        }
-        if line.uppercased().hasPrefix("RECAP:") {
-            recap = String(line.dropFirst("RECAP:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            continue
-        }
-        if line.uppercased().hasPrefix("TAKEAWAY:") {
-            takeaway = String(line.dropFirst("TAKEAWAY:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            continue
-        }
-    }
-
-    let fallbackLines = lines.filter { line in
-        let upper = line.uppercased()
-        return !upper.hasPrefix("VERDICT:") && !upper.hasPrefix("HEADLINE:") && !upper.hasPrefix("RECAP:") && !upper.hasPrefix("TAKEAWAY:")
-    }
-
-    if headline == nil, let first = fallbackLines.first {
-        headline = first
-    }
-    if recap == nil {
-        recap = fallbackLines.count > 1 ? fallbackLines[1] : headline
-    }
-    if takeaway == nil {
-        takeaway = fallbackLines.count > 2 ? fallbackLines[2] : recap
-    }
-
-    return LocalSessionReviewPayload(
-        headline: headline?.trimmedOrFallback("Session review ready.") ?? "Session review ready.",
-        verdict: verdict ?? inferredVerdict(from: [headline, recap, takeaway].compactMap { $0 }.joined(separator: " ")),
-        recap: recap?.trimmedOrFallback("The session completed with local evidence only.") ?? "The session completed with local evidence only.",
-        takeaway: takeaway?.trimmedOrFallback("The outcome stayed unclear.") ?? "The outcome stayed unclear."
-    )
 }
 
 private func parseLearningMemory(from text: String, sourceFeedbackCount: Int) throws -> SessionReviewLearningMemory {
@@ -1005,41 +1206,67 @@ private func parseLearningMemory(from text: String, sourceFeedbackCount: Int) th
     )
 }
 
-private func inferredVerdict(from text: String) -> SessionVerdict {
-    let normalized = text.lowercased()
-    if normalized.contains("mostly did what you meant to do")
-        || normalized.contains("did what you meant to do")
-        || normalized.contains("matched the goal")
-        || normalized.contains("matched the intent") {
-        return .matched
+private func leakedPromptPhrase(in values: [String]) -> String? {
+    let leakagePhrases = [
+        "four required lines",
+        "required lines",
+        "derived facts",
+        "raw evidence",
+        "output contract",
+        "review_learnings",
+        "review learnings",
+        "review_feedback_examples",
+        "review feedback examples",
+        "weak framing hints",
+        "framing hints",
+        "feedback notes",
+        "earlier feedback examples",
+        "session signals",
+        "captured evidence",
+        "allowed mentions",
+        "allowed entity tags",
+        "allowed entity refs",
+        "guided writing",
+        "actually mattered",
+        "actual matters",
+    ]
+
+    for value in values {
+        let lowered = value.lowercased()
+        for phrase in leakagePhrases where lowered.contains(phrase) {
+            return phrase
+        }
     }
-    if normalized.contains("did not help")
-        || normalized.contains("drift")
-        || normalized.contains("took over")
-        || normalized.contains("displaced")
-        || normalized.contains("pulled away") {
-        return .missed
-    }
-    return .partiallyMatched
+
+    return nil
 }
 
-private func normalizedVerdict(from value: String) -> SessionVerdict? {
-    let normalized = value
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-        .lowercased()
-        .replacingOccurrences(of: "-", with: "_")
-        .replacingOccurrences(of: " ", with: "_")
+private func invalidGenericReviewPhrase(in values: [String]) -> String? {
+    let blockedPhrases = [
+        "desktop activity",
+        "during this time period",
+        "desired focus work",
+        "stated goal",
+        "lack of concentration",
+        "attention was diverted",
+        "did not align with the stated goal",
+        "was observed",
+        "maintain focus on your primary tasks",
+        "maintain focus on primary tasks",
+        "minimize external media consumption",
+        "stay focused on your main task",
+        "avoid switching to other surfaces",
+        "maintain focus on your main application",
+    ]
 
-    switch normalized {
-    case "matched", "match", "strong":
-        return .matched
-    case "partially_matched", "partial", "partially", "mixed":
-        return .partiallyMatched
-    case "missed", "miss", "weak", "failed":
-        return .missed
-    default:
-        return SessionVerdict(rawValue: normalized)
+    for value in values {
+        let lowered = value.lowercased()
+        for phrase in blockedPhrases where lowered.contains(phrase) {
+            return phrase
+        }
     }
+
+    return nil
 }
 
 private func topCounts(_ values: [String], limit: Int) -> [String] {
@@ -1067,6 +1294,44 @@ private extension String {
 
 private func inferredRichSpans(from text: String, goal: String) -> [SessionReviewInlineSpan] {
     inferredRichSpans(from: text, goal: goal, segments: [])
+}
+
+private func parseExplicitReviewSpans(
+    from text: String,
+    segments: [TimelineSegment]
+) -> [SessionReviewInlineSpan] {
+    var spans: [SessionReviewInlineSpan] = []
+    var cursor = text.startIndex
+
+    while cursor < text.endIndex {
+        guard let start = text[cursor...].range(of: "[[")?.lowerBound else {
+            spans.append(SessionReviewInlineSpan(kind: .text, text: String(text[cursor...])))
+            break
+        }
+
+        if cursor < start {
+            spans.append(SessionReviewInlineSpan(kind: .text, text: String(text[cursor..<start])))
+        }
+
+        guard let end = text[start...].range(of: "]]")?.upperBound else {
+            spans.append(SessionReviewInlineSpan(kind: .text, text: String(text[start...])))
+            break
+        }
+
+        let tokenStart = text.index(start, offsetBy: 2)
+        let tokenEnd = text.index(end, offsetBy: -2)
+        let token = String(text[tokenStart..<tokenEnd])
+
+        if let entitySpan = explicitEntitySpan(from: token, segments: segments) {
+            spans.append(entitySpan)
+        } else {
+            spans.append(SessionReviewInlineSpan(kind: .text, text: String(text[start..<end])))
+        }
+
+        cursor = end
+    }
+
+    return normalizedInlineTagSpacing(compactedRichSpans(spans))
 }
 
 private func inferredRichSpans(from text: String, goal: String, segments: [TimelineSegment]) -> [SessionReviewInlineSpan] {
@@ -1102,6 +1367,36 @@ private func inferredRichSpans(from text: String, goal: String, segments: [Timel
     return compactedRichSpans(spans)
 }
 
+private func explicitEntitySpan(
+    from token: String,
+    segments: [TimelineSegment]
+) -> SessionReviewInlineSpan? {
+    let pieces = token.split(separator: "|", maxSplits: 1).map(String.init)
+    guard pieces.count == 2 else { return nil }
+
+    let descriptor = pieces[0].trimmingCharacters(in: .whitespacesAndNewlines)
+    let label = cleanedTitleLabel(pieces[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !descriptor.isEmpty, !label.isEmpty else { return nil }
+
+    let descriptorParts = descriptor.split(separator: ":", maxSplits: 1).map(String.init)
+    guard descriptorParts.count == 2 else { return nil }
+
+    let kind = descriptorParts[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let referenceID = descriptorParts[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !kind.isEmpty, !referenceID.isEmpty else { return nil }
+
+    guard let definition = ReviewEntityRegistry.definition(forReferenceID: referenceID) else { return nil }
+    guard definition.kind == kind else { return nil }
+
+    return SessionReviewInlineSpan(
+        kind: .entity,
+        text: label,
+        entityKind: definition.kind,
+        referenceID: definition.referenceID,
+        url: inferredURL(forReferenceID: referenceID, text: label, in: segments)
+    )
+}
+
 private func inferredPlainSpans(
     from text: String,
     goal: String,
@@ -1114,23 +1409,7 @@ private func inferredPlainSpans(
         let ref: String?
     }
 
-    let entityPatterns: [(label: String, kind: String, ref: String)] = [
-        ("Notion Calendar", "site", "notion-calendar"),
-        ("Google Docs", "site", "google-docs"),
-        ("Google Drive", "site", "google-drive"),
-        ("YouTube", "site", "youtube"),
-        ("WhatsApp", "app", "whatsapp"),
-        ("Safari", "app", "safari"),
-        ("Chrome", "app", "chrome"),
-        ("GitHub", "site", "github"),
-        ("Spotify", "app", "spotify"),
-        ("Notion", "site", "notion"),
-        ("Cursor", "app", "cursor"),
-        ("Codex", "app", "codex"),
-        ("Log Book", "app", "log-book"),
-        ("Logbook app", "app", "log-book"),
-        ("Logbook", "app", "log-book"),
-    ]
+    let entityPatterns = ReviewEntityRegistry.inferredEntityPatterns()
 
     var matches: [Match] = []
 
@@ -1236,12 +1515,180 @@ private func compactedRichSpans(_ spans: [SessionReviewInlineSpan]) -> [SessionR
     return result
 }
 
+private func normalizedInlineTagSpacing(_ spans: [SessionReviewInlineSpan]) -> [SessionReviewInlineSpan] {
+    guard !spans.isEmpty else { return spans }
+
+    var normalized = spans
+
+    for index in normalized.indices {
+        guard normalized[index].kind != .text else { continue }
+
+        if index > normalized.startIndex, normalized[index - 1].kind == .text {
+            let previousText = normalized[index - 1].text
+            if let last = previousText.last, shouldInsertSpaceBeforeInlineTag(after: last) {
+                normalized[index - 1] = SessionReviewInlineSpan(
+                    kind: .text,
+                    text: previousText + " "
+                )
+            }
+        }
+
+        if index < normalized.index(before: normalized.endIndex), normalized[index + 1].kind == .text {
+            let nextText = normalized[index + 1].text
+            if let first = nextText.first, shouldInsertSpaceAfterInlineTag(before: first) {
+                normalized[index + 1] = SessionReviewInlineSpan(
+                    kind: .text,
+                    text: " " + nextText
+                )
+            }
+        }
+    }
+
+    return compactedRichSpans(normalized)
+}
+
+private func shouldInsertSpaceBeforeInlineTag(after character: Character) -> Bool {
+    if character.isWhitespace { return false }
+    if character.isLetter || character.isNumber { return true }
+    return false
+}
+
+private func shouldInsertSpaceAfterInlineTag(before character: Character) -> Bool {
+    if character.isWhitespace { return false }
+    if character.isLetter || character.isNumber { return true }
+    return false
+}
+
+private func sanitizedReviewURL(_ rawURL: String) -> String? {
+    guard var components = URLComponents(string: rawURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+          let scheme = components.scheme?.lowercased(),
+          scheme == "http" || scheme == "https",
+          components.host?.isEmpty == false else {
+        return nil
+    }
+
+    components.fragment = nil
+
+    if var queryItems = components.queryItems, !queryItems.isEmpty {
+        let droppedNames: Set<String> = [
+            "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+            "si", "feature", "pp"
+        ]
+        queryItems.removeAll { droppedNames.contains($0.name.lowercased()) }
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
+    }
+
+    return components.string
+}
+
+private func normalizedReviewHost(from urlString: String) -> String? {
+    guard let host = URL(string: urlString)?.host?.lowercased() else { return nil }
+    return host.replacingOccurrences(of: "www.", with: "")
+}
+
+private func preferredReviewLinkTitle(
+    _ rawTitle: String?,
+    fallbackTitle: String?,
+    url: String,
+    domain: String?
+) -> String? {
+    let candidates = [rawTitle, fallbackTitle].compactMap { candidate -> String? in
+        let cleaned = cleanedTitleLabel(candidate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty, !isGenericReviewLinkTitle(cleaned, domain: domain) else { return nil }
+        return cleaned
+    }
+
+    if let candidate = candidates.first {
+        return candidate
+    }
+
+    guard let domain else { return nil }
+    let fallback = SourceBadgeFactory.inlineBadge(for: domain)?.label ?? domain
+    return isGenericReviewLinkTitle(fallback, domain: domain) ? nil : fallback
+}
+
+private func isGenericReviewLinkTitle(_ title: String, domain: String?) -> Bool {
+    let lowered = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if lowered.isEmpty { return true }
+
+    let blocked: Set<String> = [
+        "youtube",
+        "youtube home",
+        "youtube shorts",
+        "github",
+        "google chrome",
+        "chrome",
+        "new tab",
+        "home",
+        "logbook",
+        "log book",
+        "x",
+        "gmail",
+        "google docs",
+        "google drive",
+        "notion"
+    ]
+
+    if blocked.contains(lowered) {
+        return true
+    }
+
+    if let domain, lowered == domain || lowered == domain.replacingOccurrences(of: ".com", with: "") {
+        return true
+    }
+
+    return false
+}
+
+private func reviewLinkPrefix(for domain: String?, title: String) -> String {
+    let loweredTitle = title.lowercased()
+    switch domain ?? "" {
+    case "youtube.com", "youtu.be":
+        return "youtube"
+    case "github.com":
+        return "github"
+    case "docs.google.com":
+        return "doc"
+    case "drive.google.com":
+        return "drive"
+    case "calendar.notion.so":
+        return "calendar"
+    case "notion.so", "notion.site":
+        return "notion"
+    case "x.com", "twitter.com":
+        return "x"
+    case "vercel.com":
+        return "vercel"
+    default:
+        if loweredTitle.contains("/") {
+            return "repo"
+        }
+        return "link"
+    }
+}
+
+private func reviewLinkSpecificityBonus(title: String, url: String, domain: String?) -> Int {
+    var score = 0
+    if title.count >= 12 { score += 2 }
+    if title.contains("/") { score += 2 }
+    if title.contains(" ") { score += 1 }
+    if let domain, ["youtube.com", "youtu.be", "github.com", "docs.google.com", "drive.google.com"].contains(domain) {
+        score += 2
+    }
+    if url.contains("watch?v=") || url.contains("/pull/") || url.contains("/issues/") || url.contains("/blob/") {
+        score += 2
+    }
+    return score
+}
+
 private func inferredURL(forReferenceID referenceID: String, text: String, in segments: [TimelineSegment]) -> String? {
+    let definitionDomains = ReviewEntityRegistry.definition(forReferenceID: referenceID)?.domains ?? []
+
     switch referenceID {
     case "youtube":
         return preferredURL(
             in: segments,
-            primaryDomainMatches: ["youtube.com", "youtu.be"],
+            primaryDomainMatches: definitionDomains,
             prefer: { segment in
                 normalizedReviewLabel(segment.secondaryLabel) == normalizedReviewLabel(text) ||
                 normalizedReviewLabel(segment.primaryLabel) == normalizedReviewLabel(text)
@@ -1250,29 +1697,26 @@ private func inferredURL(forReferenceID referenceID: String, text: String, in se
     case "github":
         return preferredURL(
             in: segments,
-            primaryDomainMatches: ["github.com"],
+            primaryDomainMatches: definitionDomains,
             prefer: { segment in
                 normalizedReviewLabel(segment.secondaryLabel) == normalizedReviewLabel(text) ||
                 normalizedReviewLabel(segment.repoName) == normalizedReviewLabel(text)
             }
         )
     case "x":
-        return preferredURL(in: segments, primaryDomainMatches: ["x.com", "twitter.com"])
+        return preferredURL(in: segments, primaryDomainMatches: definitionDomains)
     case "notion-calendar":
         return preferredURL(
             in: segments,
-            primaryDomainMatches: ["calendar.notion.so"],
+            primaryDomainMatches: definitionDomains,
             prefer: { segment in
                 normalizedReviewLabel(segment.secondaryLabel) == normalizedReviewLabel(text) ||
                 normalizedReviewLabel(segment.primaryLabel) == normalizedReviewLabel(text)
             }
         )
-    case "google-docs":
-        return preferredURL(in: segments, primaryDomainMatches: ["docs.google.com"])
-    case "google-drive":
-        return preferredURL(in: segments, primaryDomainMatches: ["drive.google.com"])
     default:
-        return nil
+        guard !definitionDomains.isEmpty else { return nil }
+        return preferredURL(in: segments, primaryDomainMatches: definitionDomains)
     }
 }
 
@@ -1314,6 +1758,79 @@ private func normalizedReviewLabel(_ value: String?) -> String {
     return cleanedTitleLabel(value)
         .trimmingCharacters(in: .whitespacesAndNewlines)
         .lowercased()
+}
+
+private func readableReviewLocationLabel(_ raw: String) -> String {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "" }
+
+    if let components = URLComponents(string: trimmed), let host = components.host?.lowercased() {
+        return readableReviewLocationLabel(
+            host: host.replacingOccurrences(of: "www.", with: ""),
+            path: components.path
+        )
+    }
+
+    let lowered = trimmed.lowercased().replacingOccurrences(of: "www.", with: "")
+    return readableReviewLocationLabel(host: lowered, path: "")
+}
+
+private func readableReviewLocationLabel(host: String, path: String) -> String {
+    switch host {
+    case "youtube.com", "youtu.be":
+        if path.contains("/shorts") {
+            return "YouTube Shorts"
+        }
+        if path.contains("/watch") {
+            return "YouTube Watch"
+        }
+        return "YouTube"
+    case "x.com", "twitter.com":
+        if path == "/home" || path.isEmpty {
+            return "X Home feed"
+        }
+        return "X"
+    case "github.com":
+        return "GitHub"
+    case "mail.google.com":
+        return "Gmail"
+    case "docs.google.com":
+        return "Google Docs"
+    case "drive.google.com":
+        return "Google Drive"
+    case "calendar.google.com":
+        return "Google Calendar"
+    case "calendar.notion.so":
+        return "Notion Calendar"
+    case "notion.so", "notion.site":
+        return "Notion"
+    default:
+        let root = host.split(separator: ".").first.map(String.init) ?? host
+        let words = root
+            .split(separator: "-", omittingEmptySubsequences: true)
+            .map { chunk in
+                let value = String(chunk)
+                return value.prefix(1).uppercased() + value.dropFirst()
+            }
+        return words.joined(separator: " ")
+    }
+}
+
+private func isBrowserShellApp(_ appName: String) -> Bool {
+    let lowered = appName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return [
+        "google chrome",
+        "chrome",
+        "safari",
+        "arc",
+        "brave browser",
+        "brave",
+        "firefox"
+    ].contains(lowered)
+}
+
+private func segmentHasWebContext(_ segment: TimelineSegment) -> Bool {
+    (segment.domain?.isEmpty == false) || (segment.url?.isEmpty == false)
 }
 
 private func cleanedTitleLabel(_ text: String) -> String {

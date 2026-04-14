@@ -40,7 +40,17 @@ struct HistorySessionRow: View {
         if let headline = session.headline?.trimmingCharacters(in: .whitespacesAndNewlines), !headline.isEmpty {
             return headline
         }
-        return session.goal
+
+        switch session.reviewStatus {
+        case .failed:
+            return "Review failed"
+        case .unavailable:
+            return "Review unavailable"
+        case .pending:
+            return "Review pending"
+        case .none, .ready:
+            return session.goal
+        }
     }
 
     private var sessionStamp: String {

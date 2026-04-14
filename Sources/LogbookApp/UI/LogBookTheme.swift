@@ -30,6 +30,9 @@ enum LogbookStyle {
     static var inlineCodeFill: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0x202020)) : Color(nsColor: NSColor(hex: 0xF1F2F4)) }
     static var inlineCodeStroke: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0x323232)) : Color(nsColor: NSColor(hex: 0xD8DADF)) }
     static var inlineCodeText: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0xF5F5F5)) : Color(nsColor: NSColor(hex: 0x1A1A1A)) }
+    static var inlineHighlightFill: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0x2C2416)) : Color(nsColor: NSColor(hex: 0xFFF1CC)) }
+    static var inlineHighlightStroke: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0x5A4720)) : Color(nsColor: NSColor(hex: 0xE6C979)) }
+    static var inlineHighlightText: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0xFFE39A)) : Color(nsColor: NSColor(hex: 0x7A5200)) }
     static var inputFill: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0x171717)) : Color(nsColor: NSColor(hex: 0xFFFFFF)) }
     static var inputFocusedFill: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0x1B1B1B)) : Color(nsColor: NSColor(hex: 0xFFFFFF)) }
     static var inputText: Color { text }
@@ -46,6 +49,9 @@ enum LogbookStyle {
     static var badgeGreenFill: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0x16261C)) : Color(nsColor: NSColor(hex: 0xDDF4E6)) }
     static var badgeGreenStroke: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0x295739)) : Color(nsColor: NSColor(hex: 0x8FD3A8)) }
     static var badgeGreenText: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0x4AD66D)) : Color(nsColor: NSColor(hex: 0x1E7A3F)) }
+    static var badgeRedFill: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0x281717)) : Color(nsColor: NSColor(hex: 0xFCE7E7)) }
+    static var badgeRedStroke: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0x5E2A2A)) : Color(nsColor: NSColor(hex: 0xE1B1B1)) }
+    static var badgeRedText: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0xFF8C8C)) : Color(nsColor: NSColor(hex: 0xA73636)) }
 
     static var warning: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0xFF8A5B)) : Color(nsColor: NSColor(hex: 0xB24A2D)) }
     static var success: Color { isDarkMode ? Color(nsColor: NSColor(hex: 0x4AD66D)) : Color(nsColor: NSColor(hex: 0x1E7A3F)) }

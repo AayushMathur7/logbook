@@ -33,6 +33,21 @@ public enum ActivityKind: String, Codable, CaseIterable {
     case sessionPinned
     case capturePaused
     case captureResumed
+    case focusGuardPrompted
+    case focusGuardRecovered
+    case focusGuardSnoozed
+    case focusGuardIgnored
+}
+
+public extension ActivityKind {
+    var isFocusGuardSignal: Bool {
+        switch self {
+        case .focusGuardPrompted, .focusGuardRecovered, .focusGuardSnoozed, .focusGuardIgnored:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 public struct ActivityEvent: Identifiable, Codable, Hashable {

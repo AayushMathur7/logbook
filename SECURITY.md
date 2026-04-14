@@ -2,7 +2,7 @@
 
 ## Reporting a security issue
 
-If you find a security or privacy issue in Log Book, please do not post the details in a public issue first.
+If you find a security or privacy issue in LogBook, please do not post the details in a public issue first.
 
 Until a dedicated security contact exists, use a private channel you control for initial disclosure.
 

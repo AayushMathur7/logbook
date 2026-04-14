@@ -54,7 +54,7 @@ Each row shows:
 Contains:
 
 - capture toggles
-- Accessibility and Calendar status
+- Accessibility status
 - privacy and retention controls
 - Ollama model availability
 
@@ -84,7 +84,6 @@ The review should answer:
 - shell commands
 - file activity in watched roots
 - clipboard changes
-- nearby calendar titles
 
 ## Non-Goals
 

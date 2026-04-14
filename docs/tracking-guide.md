@@ -10,7 +10,6 @@ It is built from:
 - the session time range
 - all events captured during that range
 - derived timeline segments and intent observations
-- nearby calendar titles when that source is enabled
 - saved feedback from earlier reviews
 
 ## Prompt Inputs
@@ -24,7 +23,6 @@ The prompt sent to the local model includes:
 - top URLs and paths
 - command activity
 - clipboard previews
-- nearby calendar titles
 - a compact timeline of the session
 - intent-aware observations about direct work, support work, drift, and breaks
 - an allowlist of evidence mentions so the review stays grounded in what was actually captured
