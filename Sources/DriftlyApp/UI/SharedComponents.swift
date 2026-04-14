@@ -27,16 +27,38 @@ struct InlineMessage: View {
     let tint: Color
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(tint)
-                .frame(width: 6, height: 6)
-                .padding(.top, 5)
+        HStack(alignment: .top, spacing: 0) {
             Text(text)
                 .font(.system(size: 12))
                 .foregroundStyle(DriftlyStyle.subtleText)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+}
+
+struct InlineActionMessage: View {
+    let text: String
+    let actionTitle: String
+    let actionURL: URL
+    let tint: Color
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            Text(message)
+                .font(.system(size: 12))
+                .foregroundStyle(DriftlyStyle.subtleText)
+                .tint(tint)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var message: AttributedString {
+        var link = AttributedString(actionTitle)
+        link.link = actionURL
+        link.underlineStyle = .single
+        var result = link
+        result.append(AttributedString(" \(text)"))
+        return result
     }
 }
 

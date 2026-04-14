@@ -48,10 +48,9 @@ Driftly is designed to keep data on your Mac.
 Driftly currently uses a local Ollama model for AI review generation.
 
 - model calls are limited to a local Ollama host
-- there is no cloud fallback
 - there are no hidden remote model calls
 
-If Ollama is unavailable, the app can still save the session and fall back to a simpler local review path.
+If Ollama is unavailable, the app can still save the session, but AI review generation will not run.
 
 ## User controls
 

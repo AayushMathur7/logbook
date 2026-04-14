@@ -30,7 +30,7 @@ The app will:
 
 - save the session
 - keep the local event timeline
-- write a simpler local recap instead of the richer AI review
+- skip AI review generation
 
 ## Validation
 
@@ -42,4 +42,4 @@ bash scripts/check.sh
 
 ## Public release gap
 
-This repo still needs a polished signed and notarized macOS release flow for broader distribution.
+This repo now has a scriptable `.app` and `.dmg` packaging path, but it still needs real signing credentials, notarization, and clean-machine release testing for broader distribution.

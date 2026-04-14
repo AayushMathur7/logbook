@@ -132,7 +132,7 @@ final class DriftlyAppController: NSObject, NSApplicationDelegate {
         guard statusItem == nil else { return }
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.imagePosition = .imageLeading
+        item.button?.imagePosition = .imageOnly
         statusItem = item
         installStatusMenuIfNeeded()
 
@@ -174,37 +174,10 @@ final class DriftlyAppController: NSObject, NSApplicationDelegate {
 
     private func refreshStatusItem() {
         guard let button = statusItem?.button else { return }
-        let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
-        button.image = NSImage(
-            systemSymbolName: model.menuBarSymbolName,
-            accessibilityDescription: "Driftly"
-        )?.withSymbolConfiguration(configuration)
+        button.image = DriftlyBrandImageFactory.defaultMenuBarImage
         button.imageScaling = .scaleProportionallyDown
-
-        if let remaining = model.sessionRemainingLabel() {
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-                .foregroundColor: NSColor.labelColor,
-                .baselineOffset: 0,
-            ]
-            let title = NSMutableAttributedString(
-                string: "Driftly ",
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-                    .foregroundColor: NSColor.labelColor,
-                ]
-            )
-            title.append(NSAttributedString(string: remaining, attributes: attributes))
-            button.attributedTitle = title
-        } else {
-            button.attributedTitle = NSAttributedString(
-                string: "Driftly",
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-                    .foregroundColor: NSColor.labelColor,
-                ]
-            )
-        }
+        button.title = ""
+        button.attributedTitle = NSAttributedString(string: "")
         rebuildStatusMenu()
     }
 

@@ -188,10 +188,6 @@ final class AppModel: ObservableObject {
         activeSession != nil
     }
 
-    var menuBarSymbolName: String {
-        return "clock"
-    }
-
     func sessionRemainingLabel(now: Date = Date()) -> String? {
         guard let activeSession else { return nil }
         let remaining = max(Int(activeSession.endsAt.timeIntervalSince(now)), 0)
@@ -231,7 +227,7 @@ final class AppModel: ObservableObject {
 
     var accessibilitySetupSummary: String? {
         guard trackAccessibilityTitles, !accessibilityTrusted else { return nil }
-        return "Accessibility is optional, but it helps Driftly capture window titles and makes reviews more specific."
+        return "so Driftly can give you the best experience."
     }
 
     var permissionOnboardingItems: [PermissionOnboardingItem] {
@@ -263,7 +259,7 @@ final class AppModel: ObservableObject {
                 title: "Accessibility",
                 status: "Recommended",
                 detail: "Needed for window titles, editor file titles, browser page titles, and more useful timeline labels.",
-                actionTitle: "Enable",
+                actionTitle: "Open System Settings",
                 isSatisfied: false
             )
         }()
@@ -353,8 +349,13 @@ final class AppModel: ObservableObject {
     }
 
     func requestAccessibilityAccess() {
+        AccessibilityInspector.openSettings()
         _ = AccessibilityInspector.isTrusted(prompt: true)
         refreshPermissionStatuses()
+    }
+
+    func openAccessibilitySettings() {
+        AccessibilityInspector.openSettings()
     }
 
     func performPermissionOnboardingAction(for kind: PermissionOnboardingKind) {

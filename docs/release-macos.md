@@ -1,44 +1,123 @@
 # macOS Release Guide
 
-This document describes what still needs to be true before Driftly is ready for a public macOS release.
+This repo now includes a simple CLI release path for building a macOS `.app` bundle and packaging it as a `.dmg`.
 
-## Current gap
+It is intended for distribution outside the Mac App Store.
 
-The project builds and runs through Swift Package Manager today, but a broader public release should ship as a signed and notarized macOS app bundle.
+## Recommended release shape
 
-That means the release work is not just `swift build`.
+For a public release, Driftly should be shipped as:
 
-## Minimum public release standard
+1. a release `.app`
+2. signed with `Developer ID Application`
+3. notarized by Apple
+4. stapled after notarization
+5. packaged in a `.dmg`
 
-- create a distributable `.app`
-- sign the app with an Apple Developer ID certificate
-- notarize the app with Apple
-- staple the notarization result
-- publish the signed artifact with install notes
+That matches Apple’s recommended outside-the-App-Store flow for Gatekeeper and notarization.
 
-## Practical release checklist
+## Scripts
 
-1. Build the release app bundle.
-2. Sign the bundle with Developer ID Application.
-3. Verify the code signature locally.
-4. Submit the app for notarization.
-5. Staple the notarization ticket.
-6. Test the downloaded artifact on a clean Mac.
-7. Publish release notes with install and permission guidance.
+### Build a release app bundle
 
-## What to test before publishing
+```bash
+./scripts/build-app-bundle.sh --configuration release
+```
 
-- first launch
-- Accessibility permission flow
-- local model setup flow
-- session start and finish
-- local recap when no model is configured
-- AI review when a model is configured
-- shell integration instructions
+By default this writes:
 
-## What still needs to be added to the repo
+```text
+dist/Driftly.app
+```
 
-- a final packaging path for the `.app`
-- a repeatable release script or Xcode archive flow
-- versioned release notes
-- a download and install path for non-technical users
+### Build a DMG
+
+```bash
+./scripts/package-dmg.sh
+```
+
+By default this writes:
+
+```text
+dist/release/Driftly.dmg
+```
+
+## Signing
+
+To sign the app and DMG, provide a Developer ID identity:
+
+```bash
+MACOS_DEVELOPER_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+./scripts/package-dmg.sh
+```
+
+The script signs:
+
+- the `.app`
+- the `.dmg`
+
+It also runs local signature verification for the app bundle.
+
+## Notarization
+
+The script supports notarization through `notarytool` using a saved keychain profile.
+
+First store credentials once on your release machine:
+
+```bash
+xcrun notarytool store-credentials "driftly-notary"
+```
+
+Then run:
+
+```bash
+MACOS_DEVELOPER_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+APPLE_NOTARY_PROFILE="driftly-notary" \
+./scripts/package-dmg.sh
+```
+
+That will:
+
+1. build the release app
+2. sign it
+3. create the DMG
+4. submit the DMG to Apple
+5. wait for notarization
+6. staple the DMG
+
+## Useful options
+
+Both scripts support overrides for:
+
+- output directory
+- scratch path
+- app name
+- display name
+- bundle identifier
+- version
+- build number
+
+Example:
+
+```bash
+DRIFTLY_VERSION="0.2.0" \
+DRIFTLY_BUILD_NUMBER="12" \
+./scripts/package-dmg.sh --bundle-id com.aayush.driftly
+```
+
+## Notes
+
+- `scripts/run-app.sh` is still the local dev launcher.
+- `scripts/build-app-bundle.sh` is the shared bundle builder used by both local app launching and release packaging.
+- If you want a more Apple-native release workflow later, you can still move this into an Xcode archive pipeline or CI job.
+
+## Before publishing
+
+Test the downloaded DMG on a clean Mac and verify:
+
+- first launch works
+- Accessibility onboarding is clear
+- session start and finish work
+- AI review works when Ollama is configured
+- the no-model state is understandable when Ollama is not configured
+- shell integration instructions are correct

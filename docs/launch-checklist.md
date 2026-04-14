@@ -38,7 +38,7 @@ This is the shortest practical list of what still needs to be true before Driftl
 
 - Test the first-run review experience on a clean machine.
 - Tune the prompt for broad goals and mixed sessions.
-- Keep the fallback review path readable when Ollama is missing or weak.
+- Make the no-model and review-failed states clear when Ollama is missing or weak.
 
 ## Suggested next product hooks
 

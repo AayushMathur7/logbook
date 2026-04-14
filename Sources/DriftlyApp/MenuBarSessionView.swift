@@ -7,7 +7,7 @@ struct MenuBarLabelView: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             HStack(spacing: 5) {
-                Image(systemName: model.menuBarSymbolName)
+                Image(nsImage: DriftlyBrandImageFactory.defaultMenuBarImage)
                 if let remaining = model.sessionRemainingLabel(now: context.date) {
                     Text(remaining)
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
@@ -40,9 +40,8 @@ struct MenuBarSessionView: View {
 
     private var titleBlock: some View {
         VStack(spacing: 4) {
-            Text("Driftly")
-                .font(.system(size: 18, weight: .semibold, design: .serif))
-                .foregroundStyle(DriftlyStyle.text)
+            DriftlyMarkView()
+                .frame(width: 54, height: 18)
 
             Text(model.activeSession == nil ? "Menu bar" : "Session running")
                 .font(.system(size: 11))

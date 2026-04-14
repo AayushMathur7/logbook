@@ -48,6 +48,7 @@ struct ContentView: View {
                 SettingsSheet(model: model)
             }
         }
+        .textSelection(.enabled)
         .animation(.easeInOut(duration: 0.22), value: model.surfaceState)
         .onAppear {
             syncSessionGoalDraftFromModel()
@@ -80,6 +81,22 @@ struct ContentView: View {
 
     private var topBar: some View {
         HStack(spacing: 8) {
+            Button {
+                guard activePane == .history else { return }
+                activePane = .session
+                model.clearHistorySelection()
+                model.restorePrimarySessionSurface(preferred: sessionPaneStateBeforeHistory)
+                sessionPaneStateBeforeHistory = nil
+            } label: {
+                HStack(spacing: 6) {
+                    DriftlyMarkView()
+                        .frame(width: 34, height: 10)
+                    DriftlyWordmarkView()
+                }
+            }
+            .buttonStyle(.plain)
+            .help("Session")
+
             Spacer(minLength: 0)
 
             Button {
@@ -94,10 +111,9 @@ struct ContentView: View {
                     model.ensureHistorySelection()
                 }
             } label: {
-                Label(activePane == .history ? "Session" : "History", systemImage: activePane == .history ? "rectangle.on.rectangle" : "clock.arrow.circlepath")
-                    .font(.system(size: 11, weight: .semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
+                Image(systemName: activePane == .history ? "rectangle.on.rectangle" : "clock.arrow.circlepath")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 28, height: 28)
                     .background(
                         Capsule()
                             .fill(activePane == .history ? AnyShapeStyle(DriftlyStyle.badgeFill) : AnyShapeStyle(.ultraThinMaterial))
@@ -109,14 +125,14 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .disabled(model.historySessions.isEmpty)
+            .help(activePane == .history ? "Session" : "History")
 
             Button {
                 activeSheet = .settings
             } label: {
-                Label("Settings", systemImage: "gearshape.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 28, height: 28)
                     .background(.ultraThinMaterial, in: Capsule())
                     .overlay(
                         Capsule()
@@ -124,6 +140,7 @@ struct ContentView: View {
                     )
             }
             .buttonStyle(.plain)
+            .help("Settings")
         }
     }
 
@@ -184,7 +201,7 @@ struct ContentView: View {
                         .foregroundStyle(DriftlyStyle.text)
                         .padding(.bottom, 10)
                     TextField(
-                        "Write homepage copy, debug auth, review the PR, ship the settings migration…",
+                        "Write the page, finish the deck, clear your inbox, ship the fix…",
                         text: $sessionGoalDraft
                     )
                     .textFieldStyle(.plain)
@@ -243,7 +260,12 @@ struct ContentView: View {
                 }
 
                 if let accessibilitySummary = model.accessibilitySetupSummary {
-                    InlineMessage(text: accessibilitySummary, tint: DriftlyStyle.caution)
+                    InlineActionMessage(
+                        text: accessibilitySummary,
+                        actionTitle: "Turn on Accessibility",
+                        actionURL: AccessibilityInspector.settingsURLs[0],
+                        tint: DriftlyStyle.caution
+                    )
                 }
 
                 Button {
@@ -1489,7 +1511,13 @@ private struct SettingsSheet: View {
                         }
 
                         settingsSection("Permissions") {
-                            permissionRow(title: "Accessibility", subtitle: model.accessibilityTrusted ? "Enabled" : "Optional, but recommended for window titles and richer context") {
+                            permissionRow(
+                                title: "Accessibility",
+                                subtitle: model.accessibilityTrusted
+                                    ? "Enabled"
+                                    : "Needed for window titles, browser page titles, and richer session context.",
+                                actionTitle: model.accessibilityTrusted ? "Open pane" : "Open System Settings"
+                            ) {
                                 model.requestAccessibilityAccess()
                             }
                         }
@@ -1521,6 +1549,7 @@ private struct SettingsSheet: View {
                         }
                     }
                     .padding(.bottom, 12)
+                    .textSelection(.enabled)
                 }
             }
             .padding(16)
@@ -1548,7 +1577,7 @@ private struct SettingsSheet: View {
         }
     }
 
-    private func permissionRow(title: String, subtitle: String, action: @escaping () -> Void) -> some View {
+    private func permissionRow(title: String, subtitle: String, actionTitle: String, action: @escaping () -> Void) -> some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
@@ -1559,7 +1588,7 @@ private struct SettingsSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            settingsChromeButton("Request", action: action)
+            settingsChromeButton(actionTitle, action: action)
         }
     }
 

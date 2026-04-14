@@ -20,16 +20,14 @@ Did this block become the thing I meant to do?
 2. Run Driftly from the repo root:
 
 ```bash
-SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build-local/clang-cache \
-CLANG_MODULE_CACHE_PATH=$PWD/.build-local/clang-cache \
-swift run --scratch-path $PWD/.build-local DriftlyApp
+./scripts/dev.sh
 ```
 
 3. Grant Accessibility when macOS asks.
 4. Start one session with a clear goal.
 5. Read the review at the end.
 
-If you want AI review generation, install Ollama locally first. If not, Driftly still works and falls back to a simpler local review.
+If you want AI review generation, install Ollama locally first. If not, Driftly still saves the session and timeline, but review generation will not run.
 
 ## Setup
 
@@ -74,7 +72,6 @@ Driftly is designed to stay local.
 - captured session data stays on your Mac
 - the database lives at `~/Library/Application Support/Driftly/driftly.sqlite`
 - AI review generation is local through Ollama
-- there is no cloud fallback
 
 See [PRIVACY.md](/Users/aayush/ai-projects/driftly/PRIVACY.md:1) for the full privacy model.
 
@@ -94,6 +91,12 @@ See:
 bash scripts/check.sh
 ```
 
+You can also launch it with:
+
+```bash
+make run
+```
+
 ## For Builders
 
 - `Sources/DriftlyApp` contains the SwiftUI macOS app
@@ -105,3 +108,4 @@ bash scripts/check.sh
 
 - [LICENSE](/Users/aayush/ai-projects/driftly/LICENSE:1)
 - [SECURITY.md](/Users/aayush/ai-projects/driftly/SECURITY.md:1)
+- [AGENT.md](/Users/aayush/ai-projects/driftly/AGENT.md:1)
