@@ -612,19 +612,6 @@ enum AIProviderBridge: LocalReviewProvider {
     }
 }
 
-private func feedbackExamplesPromptBlock(_ examples: [SessionReviewFeedbackExample]) -> String {
-    guard !examples.isEmpty else { return "- none" }
-
-    return examples.map { example in
-        """
-        - Goal: \(example.goal)
-          Review said: \(example.reviewSaid)
-          User feedback: \(example.userFeedback)
-          Label: \(example.label.rawValue)
-        """
-    }.joined(separator: "\n")
-}
-
 private func focusGuardNudgePrompt(
     goal: String,
     assessmentReason: String,
@@ -744,38 +731,6 @@ private func feedbackLearningPrompt(personName: String?, feedbackExamples: [Sess
     """
 }
 
-private func goalSpecificityLabel(for goal: String, intent: SessionIntent) -> String {
-    let normalizedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-
-    if normalizedGoal.isEmpty || normalizedGoal == "work" || normalizedGoal == "stuff" || normalizedGoal == "be productive" {
-        return "unclear"
-    }
-
-    if intent.mode == .unknown || intent.mode == .mixed {
-        return intent.targets.isEmpty && intent.objects.isEmpty ? "unclear" : "broad"
-    }
-
-    let broadPhrases = [
-        "get my day ready",
-        "get ready",
-        "get organized",
-        "reset",
-        "plan my day",
-        "prepare my day",
-        "day ready",
-    ]
-
-    if broadPhrases.contains(where: { normalizedGoal.contains($0) }) {
-        return "broad"
-    }
-
-    if !intent.targets.isEmpty || !intent.objects.isEmpty {
-        return "specific"
-    }
-
-    return "broad"
-}
-
 private func allowedEvidenceMentions(
     from segments: [TimelineSegment],
     events: [ActivityEvent]
@@ -806,26 +761,6 @@ private func allowedEvidenceMentions(
     }
 
     return Array(mentions.prefix(30))
-}
-
-private func allowedReviewEntities(
-    from segments: [TimelineSegment],
-    events: [ActivityEvent]
-) -> [ReviewEntityDefinition] {
-    ReviewEntityRegistry.allowedEntities(from: segments, events: events)
-}
-
-private func shortDurationLabel(for seconds: Int) -> String {
-    if seconds <= 0 {
-        return "0m"
-    }
-
-    if seconds < 60 {
-        return "\(seconds)s"
-    }
-
-    let minutes = Int((Double(seconds) / 60.0).rounded())
-    return "\(max(minutes, 1))m"
 }
 
 private struct SessionPromptFactPack {
@@ -1093,24 +1028,6 @@ private func naturalDurationLabel(for seconds: Int) -> String {
     return "about \(max(minutes, 1)) minutes"
 }
 
-private func dominantObservedEntityLabels(
-    from observedSegments: [ObservedTimelineSegment],
-    role: SessionSegmentRole,
-    limit: Int = 3
-) -> [String] {
-    var seen: Set<String> = []
-    var labels: [String] = []
-
-    for observed in observedSegments where observed.role == role {
-        let label = observedEntityLabel(for: observed.segment)
-        guard !label.isEmpty, seen.insert(label).inserted else { continue }
-        labels.append(label)
-        if labels.count >= limit { break }
-    }
-
-    return labels
-}
-
 private func observedEntityLabel(for segment: TimelineSegment) -> String {
     let domain = (segment.domain ?? "").lowercased()
 
@@ -1199,25 +1116,31 @@ private enum OllamaResponseFormat: Encodable {
     }
 }
 
+private enum JSONSchemaType: String, Encodable {
+    case object
+    case array
+    case string
+}
+
 private struct OllamaJSONSchema: Encodable {
-    let type: String
+    let type: JSONSchemaType
     let properties: [String: OllamaJSONSchemaProperty]
     let required: [String]
     let additionalProperties: Bool
 
     static let sessionReview = OllamaJSONSchema(
-        type: "object",
+        type: .object,
         properties: [
             "headline": OllamaJSONSchemaProperty(
-                type: "string",
+                type: .string,
                 description: "Short judgment about what the block became. Under 10 words."
             ),
             "summary": OllamaJSONSchemaProperty(
-                type: "string",
+                type: .string,
                 description: "Plain text interpretation of how the session compared with the goal, using concrete evidence. Under 48 words."
             ),
             "insight": OllamaJSONSchemaProperty(
-                type: "string",
+                type: .string,
                 description: "One calm, specific next move or reframing sentence that helps correct or continue the work."
             ),
         ],
@@ -1226,12 +1149,12 @@ private struct OllamaJSONSchema: Encodable {
     )
 
     static let learningMemory = OllamaJSONSchema(
-        type: "object",
+        type: .object,
         properties: [
             "learnings": OllamaJSONSchemaProperty(
-                type: "array",
+                type: .array,
                 description: "Short user-specific review framing rules.",
-                items: OllamaJSONSchemaProperty(type: "string")
+                items: OllamaJSONSchemaProperty(type: .string)
             ),
         ],
         required: ["learnings"],
@@ -1240,7 +1163,7 @@ private struct OllamaJSONSchema: Encodable {
 }
 
 private final class OllamaJSONSchemaProperty: Encodable {
-    let type: String
+    let type: JSONSchemaType
     let description: String?
     let properties: [String: OllamaJSONSchemaProperty]?
     let items: OllamaJSONSchemaProperty?
@@ -1259,7 +1182,7 @@ private final class OllamaJSONSchemaProperty: Encodable {
     }
 
     init(
-        type: String,
+        type: JSONSchemaType,
         description: String? = nil,
         properties: [String: OllamaJSONSchemaProperty]? = nil,
         items: OllamaJSONSchemaProperty? = nil,
@@ -1305,8 +1228,15 @@ private func structuredOutputSchemaJSON(for kind: StructuredOutputKind) -> Strin
 
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
-    let data = try? encoder.encode(schema)
-    return data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+    do {
+        let data = try encoder.encode(schema)
+        guard let json = String(data: data, encoding: .utf8) else {
+            preconditionFailure("Failed to encode structured output schema as UTF-8.")
+        }
+        return json
+    } catch {
+        preconditionFailure("Failed to encode structured output schema: \(error)")
+    }
 }
 
 private struct ParsedStructuredSessionReviewPayload {
@@ -1340,15 +1270,6 @@ private func parseStructuredSessionReviewPayload(from text: String) throws -> Pa
         summary: payload.summary,
         insight: payload.insight
     )
-}
-
-private func shouldInsertSpaceInPlainSummary(existing: String, next: String) -> Bool {
-    guard let last = existing.last, let first = next.first else { return false }
-    if last.isWhitespace || first.isWhitespace { return false }
-    if ",.;:!?)]}".contains(first) { return false }
-    if "([{/".contains(last) { return false }
-    if last == "#" || first == "#" { return false }
-    return true
 }
 
 private struct LearningMemoryPayload: Decodable {
@@ -1469,44 +1390,6 @@ private func inferredRichSpans(from text: String, goal: String) -> [SessionRevie
     inferredRichSpans(from: text, goal: goal, segments: [])
 }
 
-private func parseExplicitReviewSpans(
-    from text: String,
-    segments: [TimelineSegment]
-) -> [SessionReviewInlineSpan] {
-    var spans: [SessionReviewInlineSpan] = []
-    var cursor = text.startIndex
-
-    while cursor < text.endIndex {
-        guard let start = text[cursor...].range(of: "[[")?.lowerBound else {
-            spans.append(SessionReviewInlineSpan(kind: .text, text: String(text[cursor...])))
-            break
-        }
-
-        if cursor < start {
-            spans.append(SessionReviewInlineSpan(kind: .text, text: String(text[cursor..<start])))
-        }
-
-        guard let end = text[start...].range(of: "]]")?.upperBound else {
-            spans.append(SessionReviewInlineSpan(kind: .text, text: String(text[start...])))
-            break
-        }
-
-        let tokenStart = text.index(start, offsetBy: 2)
-        let tokenEnd = text.index(end, offsetBy: -2)
-        let token = String(text[tokenStart..<tokenEnd])
-
-        if let entitySpan = explicitEntitySpan(from: token, segments: segments) {
-            spans.append(entitySpan)
-        } else {
-            spans.append(SessionReviewInlineSpan(kind: .text, text: String(text[start..<end])))
-        }
-
-        cursor = end
-    }
-
-    return normalizedInlineTagSpacing(compactedRichSpans(spans))
-}
-
 private func inferredRichSpans(from text: String, goal: String, segments: [TimelineSegment]) -> [SessionReviewInlineSpan] {
     let quotedSegments = splitQuotedSegments(in: text)
     var spans: [SessionReviewInlineSpan] = []
@@ -1540,36 +1423,6 @@ private func inferredRichSpans(from text: String, goal: String, segments: [Timel
     return compactedRichSpans(spans)
 }
 
-private func explicitEntitySpan(
-    from token: String,
-    segments: [TimelineSegment]
-) -> SessionReviewInlineSpan? {
-    let pieces = token.split(separator: "|", maxSplits: 1).map(String.init)
-    guard pieces.count == 2 else { return nil }
-
-    let descriptor = pieces[0].trimmingCharacters(in: .whitespacesAndNewlines)
-    let label = cleanedTitleLabel(pieces[1]).trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !descriptor.isEmpty, !label.isEmpty else { return nil }
-
-    let descriptorParts = descriptor.split(separator: ":", maxSplits: 1).map(String.init)
-    guard descriptorParts.count == 2 else { return nil }
-
-    let kind = descriptorParts[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    let referenceID = descriptorParts[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    guard !kind.isEmpty, !referenceID.isEmpty else { return nil }
-
-    guard let definition = ReviewEntityRegistry.definition(forReferenceID: referenceID) else { return nil }
-    guard definition.kind == kind else { return nil }
-
-    return SessionReviewInlineSpan(
-        kind: .entity,
-        text: label,
-        entityKind: definition.kind,
-        referenceID: definition.referenceID,
-        url: inferredURL(forReferenceID: referenceID, text: label, in: segments)
-    )
-}
-
 private func inferredPlainSpans(
     from text: String,
     goal: String,
@@ -1599,7 +1452,7 @@ private func inferredPlainSpans(
     }
 
     for pattern in entityPatterns {
-        if usedEntityRefs.contains(pattern.ref) { continue }
+        if usedEntityRefs.contains(pattern.referenceID) { continue }
         if let range = text.range(of: pattern.label, options: [.caseInsensitive]) {
             matches.append(
                 Match(
@@ -1607,11 +1460,11 @@ private func inferredPlainSpans(
                     span: SessionReviewInlineSpan(
                         kind: .entity,
                         text: text[range].description,
-                        entityKind: pattern.kind,
-                        referenceID: pattern.ref,
-                        url: inferredURL(forReferenceID: pattern.ref, text: text[range].description, in: segments)
+                        entityKind: pattern.kind.rawValue,
+                        referenceID: pattern.referenceID,
+                        url: inferredURL(forReferenceID: pattern.referenceID, text: text[range].description, in: segments)
                     ),
-                    ref: pattern.ref
+                    ref: pattern.referenceID
                 )
             )
         }
@@ -1730,128 +1583,6 @@ private func shouldInsertSpaceAfterInlineTag(before character: Character) -> Boo
     if character.isWhitespace { return false }
     if character.isLetter || character.isNumber { return true }
     return false
-}
-
-private func sanitizedReviewURL(_ rawURL: String) -> String? {
-    guard var components = URLComponents(string: rawURL.trimmingCharacters(in: .whitespacesAndNewlines)),
-          let scheme = components.scheme?.lowercased(),
-          scheme == "http" || scheme == "https",
-          components.host?.isEmpty == false else {
-        return nil
-    }
-
-    components.fragment = nil
-
-    if var queryItems = components.queryItems, !queryItems.isEmpty {
-        let droppedNames: Set<String> = [
-            "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
-            "si", "feature", "pp"
-        ]
-        queryItems.removeAll { droppedNames.contains($0.name.lowercased()) }
-        components.queryItems = queryItems.isEmpty ? nil : queryItems
-    }
-
-    return components.string
-}
-
-private func normalizedReviewHost(from urlString: String) -> String? {
-    guard let host = URL(string: urlString)?.host?.lowercased() else { return nil }
-    return host.replacingOccurrences(of: "www.", with: "")
-}
-
-private func preferredReviewLinkTitle(
-    _ rawTitle: String?,
-    fallbackTitle: String?,
-    url: String,
-    domain: String?
-) -> String? {
-    let candidates = [rawTitle, fallbackTitle].compactMap { candidate -> String? in
-        let cleaned = cleanedTitleLabel(candidate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty, !isGenericReviewLinkTitle(cleaned, domain: domain) else { return nil }
-        return cleaned
-    }
-
-    if let candidate = candidates.first {
-        return candidate
-    }
-
-    guard let domain else { return nil }
-    let fallback = SourceBadgeFactory.inlineBadge(for: domain)?.label ?? domain
-    return isGenericReviewLinkTitle(fallback, domain: domain) ? nil : fallback
-}
-
-private func isGenericReviewLinkTitle(_ title: String, domain: String?) -> Bool {
-    let lowered = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    if lowered.isEmpty { return true }
-
-    let blocked: Set<String> = [
-        "youtube",
-        "youtube home",
-        "youtube shorts",
-        "github",
-        "google chrome",
-        "chrome",
-        "new tab",
-        "home",
-        "driftly",
-        "drift ly",
-        "x",
-        "gmail",
-        "google docs",
-        "google drive",
-        "notion"
-    ]
-
-    if blocked.contains(lowered) {
-        return true
-    }
-
-    if let domain, lowered == domain || lowered == domain.replacingOccurrences(of: ".com", with: "") {
-        return true
-    }
-
-    return false
-}
-
-private func reviewLinkPrefix(for domain: String?, title: String) -> String {
-    let loweredTitle = title.lowercased()
-    switch domain ?? "" {
-    case "youtube.com", "youtu.be":
-        return "youtube"
-    case "github.com":
-        return "github"
-    case "docs.google.com":
-        return "doc"
-    case "drive.google.com":
-        return "drive"
-    case "calendar.notion.so":
-        return "calendar"
-    case "notion.so", "notion.site":
-        return "notion"
-    case "x.com", "twitter.com":
-        return "x"
-    case "vercel.com":
-        return "vercel"
-    default:
-        if loweredTitle.contains("/") {
-            return "repo"
-        }
-        return "link"
-    }
-}
-
-private func reviewLinkSpecificityBonus(title: String, url: String, domain: String?) -> Int {
-    var score = 0
-    if title.count >= 12 { score += 2 }
-    if title.contains("/") { score += 2 }
-    if title.contains(" ") { score += 1 }
-    if let domain, ["youtube.com", "youtu.be", "github.com", "docs.google.com", "drive.google.com"].contains(domain) {
-        score += 2
-    }
-    if url.contains("watch?v=") || url.contains("/pull/") || url.contains("/issues/") || url.contains("/blob/") {
-        score += 2
-    }
-    return score
 }
 
 private func inferredURL(forReferenceID referenceID: String, text: String, in segments: [TimelineSegment]) -> String? {

@@ -260,6 +260,19 @@ public enum ReviewStatus: String, Codable, CaseIterable {
     case ready
     case unavailable
     case failed
+
+    public var historyTitle: String {
+        switch self {
+        case .pending:
+            return "Review pending"
+        case .unavailable:
+            return "Review unavailable"
+        case .failed:
+            return "Review failed"
+        case .none, .ready:
+            return ""
+        }
+    }
 }
 
 public enum SessionQuality: String, Codable, CaseIterable {

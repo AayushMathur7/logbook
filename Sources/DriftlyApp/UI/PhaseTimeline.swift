@@ -140,66 +140,59 @@ private struct SessionPhaseCard: View {
     let phase: TimelinePhase
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(ActivityFormatting.sessionTime.string(from: phase.startAt, to: phase.endAt))
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(DriftlyStyle.subtleText)
-                Spacer(minLength: 8)
-            }
+        Card(secondary: true) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(ActivityFormatting.sessionTime.string(from: phase.startAt, to: phase.endAt))
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(DriftlyStyle.subtleText)
+                    Spacer(minLength: 8)
+                }
 
-            if !phase.sourceBadges.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(phase.sourceBadges) { badge in
-                            SourceBadge(badge: badge)
+                if !phase.sourceBadges.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(phase.sourceBadges) { badge in
+                                SourceBadge(badge: badge)
+                            }
                         }
                     }
                 }
-            }
 
-            TruncatedMarkdownText(
-                phase.label,
-                font: .system(size: 12, weight: .semibold),
-                color: .primary,
-                lineLimit: 3,
-                maxHeight: 48,
-                codePointSize: 11
-            )
-            .help(phase.label)
-
-            if !phase.metadata.isEmpty {
                 TruncatedMarkdownText(
-                    phase.metadata,
-                    font: .system(size: 11),
-                    color: DriftlyStyle.subtleText,
-                    lineLimit: 2,
-                    maxHeight: 30,
-                    codePointSize: 10
+                    phase.label,
+                    font: .system(size: 12, weight: .semibold),
+                    color: .primary,
+                    lineLimit: 3,
+                    maxHeight: 48,
+                    codePointSize: 11
                 )
-                    .help(phase.metadata)
-            }
+                .help(phase.label)
 
-            if !phase.overlays.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(phase.overlays) { overlay in
-                            OverlayBadge(overlay: overlay)
+                if !phase.metadata.isEmpty {
+                    TruncatedMarkdownText(
+                        phase.metadata,
+                        font: .system(size: 11),
+                        color: DriftlyStyle.subtleText,
+                        lineLimit: 2,
+                        maxHeight: 30,
+                        codePointSize: 10
+                    )
+                        .help(phase.metadata)
+                }
+
+                if !phase.overlays.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(phase.overlays) { overlay in
+                                OverlayBadge(overlay: overlay)
+                            }
                         }
                     }
                 }
             }
         }
-        .padding(12)
         .frame(width: cardWidth, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(DriftlyStyle.secondaryCardFill)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(DriftlyStyle.cardStroke, lineWidth: 1)
-                )
-        )
     }
 
     private var cardWidth: CGFloat {

@@ -56,7 +56,6 @@ public enum AttentionDeriver {
             }
         }
 
-        // If an overlay could not be assigned, keep it as a low-confidence foreground instead of losing it.
         for candidate in deferredOverlays {
             foregrounds.append(
                 AttentionSegment(
@@ -104,7 +103,7 @@ public enum AttentionDeriver {
             return nextIndex
         }
 
-        // As a fallback, attach passive audio to the nearest coding/browser foreground anywhere nearby.
+        // Passive audio stays attached to nearby work context when timing alone is inconclusive.
         if candidate.overlayKind == .audio {
             let scored = foregrounds.enumerated().map { index, foreground in
                 (

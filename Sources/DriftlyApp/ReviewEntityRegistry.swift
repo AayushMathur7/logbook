@@ -1,13 +1,21 @@
 import Foundation
 import DriftlyCore
 
+enum ReviewEntityKind: String, Hashable {
+    case app
+    case site
+}
+
 struct ReviewEntityDefinition: Hashable {
-    let kind: String
+    let kind: ReviewEntityKind
     let referenceID: String
     let label: String
     let aliases: [String]
     let domains: [String]
-    let icon: SourceBadgeIcon
+
+    var key: String {
+        "\(kind.rawValue):\(referenceID)"
+    }
 
     var allLabels: [String] {
         var seen: Set<String> = []
@@ -27,53 +35,59 @@ struct ReviewEntityDefinition: Hashable {
     }
 }
 
+struct ReviewEntityPattern: Hashable {
+    let label: String
+    let kind: ReviewEntityKind
+    let referenceID: String
+}
+
 enum ReviewEntityRegistry {
     static let entities: [ReviewEntityDefinition] = [
-        ReviewEntityDefinition(kind: "app", referenceID: "chrome", label: "Chrome", aliases: ["chrome", "google chrome"], domains: [], icon: .brandAsset("chrome")),
-        ReviewEntityDefinition(kind: "app", referenceID: "safari", label: "Safari", aliases: ["safari"], domains: [], icon: .app(bundleID: "com.apple.Safari")),
-        ReviewEntityDefinition(kind: "app", referenceID: "codex", label: "Codex", aliases: ["codex"], domains: [], icon: .brandAsset("codex")),
-        ReviewEntityDefinition(kind: "app", referenceID: "cursor", label: "Cursor", aliases: ["cursor"], domains: [], icon: .app(bundleID: "com.todesktop.230313mzl4w4u92")),
-        ReviewEntityDefinition(kind: "app", referenceID: "claude", label: "Claude", aliases: ["claude"], domains: ["claude.ai"], icon: .brandAsset("claude")),
-        ReviewEntityDefinition(kind: "app", referenceID: "chatgpt", label: "ChatGPT", aliases: ["chatgpt"], domains: ["chatgpt.com"], icon: .app(bundleID: "com.openai.chat")),
-        ReviewEntityDefinition(kind: "app", referenceID: "driftly", label: "Driftly", aliases: ["driftly", "drift ly", "log book", "logbook", "log-book"], domains: [], icon: .system("wind")),
-        ReviewEntityDefinition(kind: "app", referenceID: "spotify", label: "Spotify", aliases: ["spotify"], domains: ["spotify.com", "open.spotify.com"], icon: .brandAsset("spotify")),
-        ReviewEntityDefinition(kind: "app", referenceID: "slack", label: "Slack", aliases: ["slack"], domains: ["slack.com", "app.slack.com"], icon: .brandAsset("slack")),
-        ReviewEntityDefinition(kind: "app", referenceID: "linear", label: "Linear", aliases: ["linear"], domains: ["linear.app"], icon: .brandAsset("linear")),
-        ReviewEntityDefinition(kind: "app", referenceID: "figma", label: "Figma", aliases: ["figma"], domains: ["figma.com"], icon: .brandAsset("figma")),
-        ReviewEntityDefinition(kind: "app", referenceID: "vercel", label: "Vercel", aliases: ["vercel"], domains: ["vercel.com"], icon: .brandAsset("vercel")),
-        ReviewEntityDefinition(kind: "app", referenceID: "facetime", label: "FaceTime", aliases: ["facetime", "face time"], domains: [], icon: .app(bundleID: "com.apple.FaceTime")),
-        ReviewEntityDefinition(kind: "app", referenceID: "messages", label: "Messages", aliases: ["messages"], domains: [], icon: .app(bundleID: "com.apple.MobileSMS")),
-        ReviewEntityDefinition(kind: "app", referenceID: "terminal", label: "Terminal", aliases: ["terminal"], domains: [], icon: .app(bundleID: "com.apple.Terminal")),
-        ReviewEntityDefinition(kind: "app", referenceID: "finder", label: "Finder", aliases: ["finder"], domains: [], icon: .app(bundleID: "com.apple.finder")),
-        ReviewEntityDefinition(kind: "app", referenceID: "notes", label: "Notes", aliases: ["notes", "apple notes"], domains: [], icon: .app(bundleID: "com.apple.Notes")),
-        ReviewEntityDefinition(kind: "app", referenceID: "music", label: "Music", aliases: ["music", "apple music"], domains: [], icon: .app(bundleID: "com.apple.Music")),
-        ReviewEntityDefinition(kind: "app", referenceID: "calendar", label: "Calendar", aliases: ["calendar", "apple calendar"], domains: [], icon: .app(bundleID: "com.apple.iCal")),
-        ReviewEntityDefinition(kind: "app", referenceID: "preview", label: "Preview", aliases: ["preview"], domains: [], icon: .app(bundleID: "com.apple.Preview")),
-        ReviewEntityDefinition(kind: "app", referenceID: "textedit", label: "TextEdit", aliases: ["textedit", "text edit"], domains: [], icon: .app(bundleID: "com.apple.TextEdit")),
-        ReviewEntityDefinition(kind: "app", referenceID: "numbers", label: "Numbers", aliases: ["numbers"], domains: [], icon: .app(bundleID: "com.apple.iWork.Numbers")),
-        ReviewEntityDefinition(kind: "app", referenceID: "pages", label: "Pages", aliases: ["pages"], domains: [], icon: .app(bundleID: "com.apple.iWork.Pages")),
-        ReviewEntityDefinition(kind: "app", referenceID: "keynote", label: "Keynote", aliases: ["keynote"], domains: [], icon: .app(bundleID: "com.apple.iWork.Keynote")),
-        ReviewEntityDefinition(kind: "site", referenceID: "github", label: "GitHub", aliases: ["github"], domains: ["github.com"], icon: .brandAsset("github")),
-        ReviewEntityDefinition(kind: "site", referenceID: "youtube", label: "YouTube", aliases: ["youtube", "youtube shorts"], domains: ["youtube.com", "youtu.be"], icon: .brandAsset("youtube")),
-        ReviewEntityDefinition(kind: "site", referenceID: "gmail", label: "Gmail", aliases: ["gmail"], domains: ["mail.google.com"], icon: .brandAsset("gmail")),
-        ReviewEntityDefinition(kind: "site", referenceID: "google-calendar", label: "Google Calendar", aliases: ["google calendar"], domains: ["calendar.google.com"], icon: .system("calendar")),
-        ReviewEntityDefinition(kind: "site", referenceID: "google-docs", label: "Google Docs", aliases: ["google docs", "google doc"], domains: ["docs.google.com"], icon: .system("doc.text")),
-        ReviewEntityDefinition(kind: "site", referenceID: "google-drive", label: "Google Drive", aliases: ["google drive"], domains: ["drive.google.com"], icon: .system("folder")),
-        ReviewEntityDefinition(kind: "site", referenceID: "notion", label: "Notion", aliases: ["notion"], domains: ["notion.so", "notion.site"], icon: .brandAsset("notion")),
-        ReviewEntityDefinition(kind: "site", referenceID: "notion-calendar", label: "Notion Calendar", aliases: ["notion calendar"], domains: ["calendar.notion.so"], icon: .brandAsset("notion")),
-        ReviewEntityDefinition(kind: "site", referenceID: "x", label: "X", aliases: ["x", "twitter"], domains: ["x.com", "twitter.com"], icon: .brandAsset("x")),
-        ReviewEntityDefinition(kind: "site", referenceID: "whatsapp", label: "WhatsApp", aliases: ["whatsapp"], domains: ["web.whatsapp.com"], icon: .app(bundleID: "net.whatsapp.WhatsApp")),
-        ReviewEntityDefinition(kind: "site", referenceID: "discord", label: "Discord", aliases: ["discord"], domains: ["discord.com", "discordapp.com"], icon: .brandAsset("discord")),
-        ReviewEntityDefinition(kind: "site", referenceID: "supabase", label: "Supabase", aliases: ["supabase"], domains: ["supabase.com"], icon: .brandAsset("supabase")),
-        ReviewEntityDefinition(kind: "site", referenceID: "raycast", label: "Raycast", aliases: ["raycast"], domains: ["raycast.com"], icon: .brandAsset("raycast")),
-        ReviewEntityDefinition(kind: "site", referenceID: "canva", label: "Canva", aliases: ["canva"], domains: ["canva.com"], icon: .brandAsset("canva")),
-        ReviewEntityDefinition(kind: "site", referenceID: "sentry", label: "Sentry", aliases: ["sentry"], domains: ["sentry.io"], icon: .brandAsset("sentry")),
-        ReviewEntityDefinition(kind: "site", referenceID: "stripe", label: "Stripe", aliases: ["stripe"], domains: ["stripe.com"], icon: .brandAsset("stripe")),
-        ReviewEntityDefinition(kind: "site", referenceID: "box", label: "Box", aliases: ["box"], domains: ["box.com", "app.box.com"], icon: .brandMonogram("B")),
-        ReviewEntityDefinition(kind: "site", referenceID: "jam", label: "Jam", aliases: ["jam"], domains: ["jam.dev"], icon: .brandMonogram("J")),
-        ReviewEntityDefinition(kind: "site", referenceID: "hugging-face", label: "Hugging Face", aliases: ["hugging face", "huggingface"], domains: ["huggingface.co"], icon: .brandAsset("huggingface")),
-        ReviewEntityDefinition(kind: "site", referenceID: "netlify", label: "Netlify", aliases: ["netlify"], domains: ["netlify.com", "app.netlify.com"], icon: .brandAsset("netlify")),
-        ReviewEntityDefinition(kind: "site", referenceID: "cloudflare", label: "Cloudflare", aliases: ["cloudflare"], domains: ["cloudflare.com", "dash.cloudflare.com"], icon: .brandAsset("cloudflare"))
+        ReviewEntityDefinition(kind: .app, referenceID: "chrome", label: "Chrome", aliases: ["chrome", "google chrome"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "safari", label: "Safari", aliases: ["safari"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "codex", label: "Codex", aliases: ["codex"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "cursor", label: "Cursor", aliases: ["cursor"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "claude", label: "Claude", aliases: ["claude"], domains: ["claude.ai"]),
+        ReviewEntityDefinition(kind: .app, referenceID: "chatgpt", label: "ChatGPT", aliases: ["chatgpt"], domains: ["chatgpt.com"]),
+        ReviewEntityDefinition(kind: .app, referenceID: "driftly", label: "Driftly", aliases: ["driftly", "drift ly", "log book", "logbook", "log-book"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "spotify", label: "Spotify", aliases: ["spotify"], domains: ["spotify.com", "open.spotify.com"]),
+        ReviewEntityDefinition(kind: .app, referenceID: "slack", label: "Slack", aliases: ["slack"], domains: ["slack.com", "app.slack.com"]),
+        ReviewEntityDefinition(kind: .app, referenceID: "linear", label: "Linear", aliases: ["linear"], domains: ["linear.app"]),
+        ReviewEntityDefinition(kind: .app, referenceID: "figma", label: "Figma", aliases: ["figma"], domains: ["figma.com"]),
+        ReviewEntityDefinition(kind: .app, referenceID: "vercel", label: "Vercel", aliases: ["vercel"], domains: ["vercel.com"]),
+        ReviewEntityDefinition(kind: .app, referenceID: "facetime", label: "FaceTime", aliases: ["facetime", "face time"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "messages", label: "Messages", aliases: ["messages"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "terminal", label: "Terminal", aliases: ["terminal"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "finder", label: "Finder", aliases: ["finder"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "notes", label: "Notes", aliases: ["notes", "apple notes"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "music", label: "Music", aliases: ["music", "apple music"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "calendar", label: "Calendar", aliases: ["calendar", "apple calendar"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "preview", label: "Preview", aliases: ["preview"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "textedit", label: "TextEdit", aliases: ["textedit", "text edit"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "numbers", label: "Numbers", aliases: ["numbers"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "pages", label: "Pages", aliases: ["pages"], domains: []),
+        ReviewEntityDefinition(kind: .app, referenceID: "keynote", label: "Keynote", aliases: ["keynote"], domains: []),
+        ReviewEntityDefinition(kind: .site, referenceID: "github", label: "GitHub", aliases: ["github"], domains: ["github.com"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "youtube", label: "YouTube", aliases: ["youtube", "youtube shorts"], domains: ["youtube.com", "youtu.be"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "gmail", label: "Gmail", aliases: ["gmail"], domains: ["mail.google.com"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "google-calendar", label: "Google Calendar", aliases: ["google calendar"], domains: ["calendar.google.com"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "google-docs", label: "Google Docs", aliases: ["google docs", "google doc"], domains: ["docs.google.com"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "google-drive", label: "Google Drive", aliases: ["google drive"], domains: ["drive.google.com"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "notion", label: "Notion", aliases: ["notion"], domains: ["notion.so", "notion.site"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "notion-calendar", label: "Notion Calendar", aliases: ["notion calendar"], domains: ["calendar.notion.so"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "x", label: "X", aliases: ["x", "twitter"], domains: ["x.com", "twitter.com"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "whatsapp", label: "WhatsApp", aliases: ["whatsapp"], domains: ["web.whatsapp.com"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "discord", label: "Discord", aliases: ["discord"], domains: ["discord.com", "discordapp.com"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "supabase", label: "Supabase", aliases: ["supabase"], domains: ["supabase.com"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "raycast", label: "Raycast", aliases: ["raycast"], domains: ["raycast.com"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "canva", label: "Canva", aliases: ["canva"], domains: ["canva.com"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "sentry", label: "Sentry", aliases: ["sentry"], domains: ["sentry.io"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "stripe", label: "Stripe", aliases: ["stripe"], domains: ["stripe.com"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "box", label: "Box", aliases: ["box"], domains: ["box.com", "app.box.com"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "jam", label: "Jam", aliases: ["jam"], domains: ["jam.dev"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "hugging-face", label: "Hugging Face", aliases: ["hugging face", "huggingface"], domains: ["huggingface.co"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "netlify", label: "Netlify", aliases: ["netlify"], domains: ["netlify.com", "app.netlify.com"]),
+        ReviewEntityDefinition(kind: .site, referenceID: "cloudflare", label: "Cloudflare", aliases: ["cloudflare"], domains: ["cloudflare.com", "dash.cloudflare.com"]),
     ]
 
     static func definition(forReferenceID referenceID: String) -> ReviewEntityDefinition? {
@@ -150,41 +164,17 @@ enum ReviewEntityRegistry {
             }
             guard hasAliasMatch || hasDomainMatch else { continue }
 
-            let key = "\(definition.kind):\(definition.referenceID)"
-            guard seen.insert(key).inserted else { continue }
+            guard seen.insert(definition.key).inserted else { continue }
             matches.append(definition)
         }
 
         return Array(matches.prefix(12))
     }
 
-    static func promptEntities() -> [ReviewEntityDefinition] {
-        entities
-    }
-
-    static func badge(forDefinition definition: ReviewEntityDefinition, label: String? = nil) -> SourceBadgeModel {
-        SourceBadgeModel(label: label ?? definition.label, icon: definition.icon)
-    }
-
-    static func iconDescription(for definition: ReviewEntityDefinition) -> String {
-        switch definition.icon {
-        case let .brandAsset(assetName):
-            return "\(assetName) logo chip"
-        case .app:
-            return "native app icon chip"
-        case .brandMonogram:
-            return "monogram chip"
-        case .system:
-            return "system icon chip"
-        case .none:
-            return "text chip"
-        }
-    }
-
-    static func inferredEntityPatterns() -> [(label: String, kind: String, ref: String)] {
+    static func inferredEntityPatterns() -> [ReviewEntityPattern] {
         entities.flatMap { definition in
             definition.allLabels.map { label in
-                (label: label, kind: definition.kind, ref: definition.referenceID)
+                ReviewEntityPattern(label: label, kind: definition.kind, referenceID: definition.referenceID)
             }
         }
         .sorted { lhs, rhs in

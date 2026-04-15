@@ -1,6 +1,5 @@
-# Driftly experimental zsh hook.
-# Source this from `.zshrc` to emit structured terminal command records
-# that the future Driftly daemon can ingest from a local inbox.
+# Source this from `.zshrc` to append structured terminal command records
+# into Driftly's local inbox.
 
 export DRIFTLY_CAPTURE_DIR="${DRIFTLY_CAPTURE_DIR:-${LOGBOOK_CAPTURE_DIR:-$HOME/Library/Application Support/Driftly/inbox}}"
 export LOGBOOK_CAPTURE_DIR="$DRIFTLY_CAPTURE_DIR"

@@ -141,7 +141,6 @@ public struct CaptureSettings: Codable, Hashable {
     public static let `default` = CaptureSettings()
 
     enum CodingKeys: String, CodingKey {
-        case focusGuardEnabled
         case focusGuardPreset
         case trackAccessibilityTitles
         case trackBrowserContext
@@ -166,8 +165,7 @@ public struct CaptureSettings: Codable, Hashable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let legacyEnabled = try container.decodeIfPresent(Bool.self, forKey: .focusGuardEnabled) ?? true
-        focusGuardPreset = try container.decodeIfPresent(FocusGuardPreset.self, forKey: .focusGuardPreset) ?? (legacyEnabled ? .balanced : .off)
+        focusGuardPreset = try container.decodeIfPresent(FocusGuardPreset.self, forKey: .focusGuardPreset) ?? .balanced
         focusGuardEnabled = focusGuardPreset != .off
         trackAccessibilityTitles = try container.decodeIfPresent(Bool.self, forKey: .trackAccessibilityTitles) ?? true
         trackBrowserContext = try container.decodeIfPresent(Bool.self, forKey: .trackBrowserContext) ?? true

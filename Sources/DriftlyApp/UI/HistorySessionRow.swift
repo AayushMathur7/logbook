@@ -42,41 +42,14 @@ struct HistorySessionRow: View {
         }
 
         switch session.reviewStatus {
-        case .failed:
-            return "Review failed"
-        case .unavailable:
-            return "Review unavailable"
-        case .pending:
-            return "Review pending"
+        case .failed, .unavailable, .pending:
+            return session.reviewStatus.historyTitle
         case .none, .ready:
             return session.goal
         }
     }
 
     private var sessionStamp: String {
-        let calendar = Calendar.current
-        let day = calendar.component(.day, from: session.startedAt)
-
-        let monthYearFormatter = DateFormatter()
-        monthYearFormatter.dateFormat = "MMMM, yyyy"
-
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateFormat = "h:mm a"
-
-        return "\(day)\(ordinalSuffix(for: day)) \(monthYearFormatter.string(from: session.startedAt)) · \(timeFormatter.string(from: session.startedAt)) to \(timeFormatter.string(from: session.endedAt))"
-    }
-
-    private func ordinalSuffix(for day: Int) -> String {
-        let tens = day % 100
-        if tens >= 11 && tens <= 13 {
-            return "th"
-        }
-
-        switch day % 10 {
-        case 1: return "st"
-        case 2: return "nd"
-        case 3: return "rd"
-        default: return "th"
-        }
+        ActivityFormatting.historySessionStamp(startedAt: session.startedAt, endedAt: session.endedAt)
     }
 }

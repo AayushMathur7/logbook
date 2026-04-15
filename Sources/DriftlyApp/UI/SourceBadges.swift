@@ -110,6 +110,43 @@ private struct SourceBadgeIconView: View {
 }
 
 enum SourceBadgeFactory {
+    private static let brandAssetIcons: Set<String> = [
+        "chrome", "codex", "claude", "spotify", "slack", "linear", "figma", "vercel",
+        "github", "youtube", "gmail", "notion", "x", "discord", "supabase",
+        "raycast", "canva", "sentry", "stripe", "hugging-face", "netlify", "cloudflare",
+    ]
+
+    private static let appBundleIcons: [String: String] = [
+        "safari": "com.apple.Safari",
+        "cursor": "com.todesktop.230313mzl4w4u92",
+        "chatgpt": "com.openai.chat",
+        "facetime": "com.apple.FaceTime",
+        "messages": "com.apple.MobileSMS",
+        "terminal": "com.apple.Terminal",
+        "finder": "com.apple.finder",
+        "notes": "com.apple.Notes",
+        "music": "com.apple.Music",
+        "calendar": "com.apple.iCal",
+        "preview": "com.apple.Preview",
+        "textedit": "com.apple.TextEdit",
+        "numbers": "com.apple.iWork.Numbers",
+        "pages": "com.apple.iWork.Pages",
+        "keynote": "com.apple.iWork.Keynote",
+        "whatsapp": "net.whatsapp.WhatsApp",
+    ]
+
+    private static let systemIcons: [String: String] = [
+        "driftly": "wind",
+        "google-calendar": "calendar",
+        "google-docs": "doc.text",
+        "google-drive": "folder",
+    ]
+
+    private static let monogramIcons: [String: String] = [
+        "box": "B",
+        "jam": "J",
+    ]
+
     static func badges(for segments: [TimelineSegment]) -> [SourceBadgeModel] {
         if let domain = segments.compactMap(\.domain).first(where: { !$0.isEmpty }) {
             return [identity(for: domain)]
@@ -133,7 +170,7 @@ enum SourceBadgeFactory {
             return SourceBadgeModel(label: "Chrome tab", icon: .brandAsset("chrome"))
         default:
             if let definition = ReviewEntityRegistry.definition(matchingValue: label) {
-                return ReviewEntityRegistry.badge(forDefinition: definition)
+                return badge(for: definition)
             }
             return SourceBadgeModel(label: label, icon: .none)
         }
@@ -147,12 +184,32 @@ enum SourceBadgeFactory {
             return identity(for: "new tab")
         }
         if let definition = ReviewEntityRegistry.definition(matchingValue: trimmed) {
-            return ReviewEntityRegistry.badge(forDefinition: definition)
+            return badge(for: definition)
         }
         if let badge = fileBadge(for: trimmed) {
             return badge
         }
         return nil
+    }
+
+    private static func badge(for definition: ReviewEntityDefinition, label: String? = nil) -> SourceBadgeModel {
+        SourceBadgeModel(label: label ?? definition.label, icon: icon(for: definition))
+    }
+
+    private static func icon(for definition: ReviewEntityDefinition) -> SourceBadgeIcon {
+        if let bundleID = appBundleIcons[definition.referenceID] {
+            return .app(bundleID: bundleID)
+        }
+        if brandAssetIcons.contains(definition.referenceID) {
+            return .brandAsset(definition.referenceID)
+        }
+        if let systemName = systemIcons[definition.referenceID] {
+            return .system(systemName)
+        }
+        if let monogram = monogramIcons[definition.referenceID] {
+            return .brandMonogram(monogram)
+        }
+        return .none
     }
 
     private static func fileBadge(for value: String) -> SourceBadgeModel? {

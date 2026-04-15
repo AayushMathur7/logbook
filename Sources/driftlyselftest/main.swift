@@ -8,7 +8,6 @@ struct SelfTestFailure: Error, CustomStringConvertible {
 enum DriftlySelfTest {
     static func run() {
         let tests: [(String, () throws -> Void)] = [
-            ("capture settings map legacy focus guard toggle to preset", testCaptureSettingsLegacyFocusGuardDecode),
             ("privacy excludes by bundle ID", testPrivacyExcludeBundleID),
             ("privacy excludes by domain", testPrivacyExcludeDomain),
             ("privacy excludes by path prefix", testPrivacyExcludePath),
@@ -86,20 +85,6 @@ enum DriftlySelfTest {
         guard condition() else {
             throw SelfTestFailure(description: message)
         }
-    }
-
-    static func testCaptureSettingsLegacyFocusGuardDecode() throws {
-        let enabledJSON = #"{"focusGuardEnabled":true}"#
-        let enabledData = Data(enabledJSON.utf8)
-        let enabledSettings = try JSONDecoder().decode(CaptureSettings.self, from: enabledData)
-        try require(enabledSettings.focusGuardPreset == .balanced, "expected legacy enabled toggle to map to balanced preset")
-        try require(enabledSettings.focusGuardEnabled, "expected balanced preset to keep focus guard enabled")
-
-        let disabledJSON = #"{"focusGuardEnabled":false}"#
-        let disabledData = Data(disabledJSON.utf8)
-        let disabledSettings = try JSONDecoder().decode(CaptureSettings.self, from: disabledData)
-        try require(disabledSettings.focusGuardPreset == .off, "expected legacy disabled toggle to map to off preset")
-        try require(!disabledSettings.focusGuardEnabled, "expected off preset to disable focus guard")
     }
 
     static func testPrivacyExcludeBundleID() throws {

@@ -46,6 +46,108 @@ struct ChatCLIRunResult {
     let stderr: String
 }
 
+private enum JSONValue: Codable, Equatable {
+    case object([String: JSONValue])
+    case array([JSONValue])
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case null
+
+    init(from decoder: Decoder) throws {
+        if let container = try? decoder.singleValueContainer() {
+            if container.decodeNil() {
+                self = .null
+                return
+            }
+            if let value = try? container.decode(Bool.self) {
+                self = .bool(value)
+                return
+            }
+            if let value = try? container.decode(Double.self) {
+                self = .number(value)
+                return
+            }
+            if let value = try? container.decode(String.self) {
+                self = .string(value)
+                return
+            }
+        }
+
+        if let container = try? decoder.container(keyedBy: DynamicCodingKey.self) {
+            var object: [String: JSONValue] = [:]
+            for key in container.allKeys {
+                object[key.stringValue] = try container.decode(JSONValue.self, forKey: key)
+            }
+            self = .object(object)
+            return
+        }
+
+        var container = try decoder.unkeyedContainer()
+        var array: [JSONValue] = []
+        while !container.isAtEnd {
+            array.append(try container.decode(JSONValue.self))
+        }
+        self = .array(array)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        switch self {
+        case let .object(object):
+            var container = encoder.container(keyedBy: DynamicCodingKey.self)
+            for (key, value) in object {
+                try container.encode(value, forKey: DynamicCodingKey(stringValue: key)!)
+            }
+        case let .array(array):
+            var container = encoder.unkeyedContainer()
+            for value in array {
+                try container.encode(value)
+            }
+        case let .string(value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case let .number(value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case let .bool(value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case .null:
+            var container = encoder.singleValueContainer()
+            try container.encodeNil()
+        }
+    }
+}
+
+private struct DynamicCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int?
+
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+        self.intValue = nil
+    }
+
+    init?(intValue: Int) {
+        self.stringValue = String(intValue)
+        self.intValue = intValue
+    }
+}
+
+private struct ClaudeAuthStatusPayload: Decodable {
+    let loggedIn: Bool
+}
+
+private struct ClaudeStructuredOutputEnvelope: Decodable {
+    let structuredOutput: JSONValue?
+    let result: String?
+
+    enum CodingKeys: String, CodingKey {
+        case structuredOutput = "structured_output"
+        case result
+    }
+}
+
 enum ChatCLIError: LocalizedError {
     case notInstalled(ChatCLITool)
     case notAuthenticated(ChatCLITool)
@@ -162,14 +264,8 @@ enum ChatCLIReviewRunner {
             )
         case .claude:
             let statusResult = LoginShellRunner.run("claude auth status", timeout: 10)
-            let authenticated: Bool
-            if let data = statusResult.stdout.data(using: .utf8),
-               let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let loggedIn = payload["loggedIn"] as? Bool {
-                authenticated = loggedIn
-            } else {
-                authenticated = statusResult.exitCode == 0 && statusResult.stdout.lowercased().contains("\"loggedin\": true")
-            }
+            let authenticated = decodeClaudeAuthStatus(from: statusResult.stdout)
+                ?? (statusResult.exitCode == 0 && statusResult.stdout.lowercased().contains("\"loggedin\": true"))
 
             return ChatCLIStatus(
                 installed: true,
@@ -386,23 +482,33 @@ enum ChatCLIReviewRunner {
         return parts.joined(separator: " ")
     }
 
+    private static func decodeClaudeAuthStatus(from stdout: String) -> Bool? {
+        guard let data = stdout.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(ClaudeAuthStatusPayload.self, from: data).loggedIn
+    }
+
     private static func parseClaudeStructuredOutput(from stdout: String) throws -> String {
         let trimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = trimmed.data(using: .utf8),
-              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return trimmed
+        guard let data = trimmed.data(using: .utf8) else {
+            throw ChatCLIError.executionFailed(.claude, "Claude Code returned non-UTF8 structured output.")
+        }
+        let payload = try JSONDecoder().decode(ClaudeStructuredOutputEnvelope.self, from: data)
+
+        if let structured = payload.structuredOutput {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let structuredData = try encoder.encode(structured)
+            guard let output = String(data: structuredData, encoding: .utf8) else {
+                throw ChatCLIError.executionFailed(.claude, "Claude Code returned structured output that could not be re-encoded.")
+            }
+            return output
         }
 
-        if let structured = payload["structured_output"] {
-            let structuredData = try JSONSerialization.data(withJSONObject: structured, options: [.sortedKeys])
-            return String(data: structuredData, encoding: .utf8) ?? trimmed
-        }
-
-        if let result = payload["result"] as? String {
+        if let result = payload.result?.trimmingCharacters(in: .whitespacesAndNewlines), !result.isEmpty {
             return result.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        return trimmed
+        throw ChatCLIError.executionFailed(.claude, "Claude Code did not return a structured payload.")
     }
 
     private static func ensureWorkingDirectory() throws -> URL {

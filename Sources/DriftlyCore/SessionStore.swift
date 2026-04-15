@@ -4,6 +4,7 @@ import SQLite3
 public final class SessionStore {
     private var db: OpaquePointer?
     private let path: URL
+    public private(set) var startupError: SessionStoreError?
 
     public init(path: URL = DriftlyPaths.databaseURL) {
         self.path = path
@@ -29,14 +30,18 @@ public final class SessionStore {
         guard
             let db,
             let row = queryRow(db, sql: "SELECT json FROM settings WHERE id = 1"),
-            let json = row["json"] as? String,
-            let data = json.data(using: .utf8),
-            let settings = try? settingsDecoder.decode(CaptureSettings.self, from: data)
+            let json = row.string("json"),
+            let data = json.data(using: .utf8)
         else {
             return .default
         }
 
-        return settings
+        do {
+            return try settingsDecoder.decode(CaptureSettings.self, from: data)
+        } catch {
+            reportStoreIssue("Ignoring malformed settings row: \(error.localizedDescription)")
+            return .default
+        }
     }
 
     public func saveCaptureSettings(_ settings: CaptureSettings) throws {
@@ -182,9 +187,9 @@ public final class SessionStore {
                 """, bind: {
                     sqlite3_bind_text($0, 1, sessionID, -1, SQLITE_TRANSIENT)
                 }),
-            let storedSessionID = row["session_id"] as? String,
-            let createdAtValue = row["created_at"] as? Double,
-            let wasHelpfulValue = row["was_helpful"] as? Int
+            let storedSessionID = row.string("session_id"),
+            let createdAtValue = row.double("created_at"),
+            let wasHelpfulValue = row.int("was_helpful")
         else {
             return nil
         }
@@ -193,11 +198,11 @@ public final class SessionStore {
             sessionID: storedSessionID,
             createdAt: Date(timeIntervalSince1970: createdAtValue),
             wasHelpful: wasHelpfulValue != 0,
-            note: row["note"] as? String,
-            goalSnapshot: row["goal_snapshot"] as? String ?? "",
-            reviewHeadlineSnapshot: row["review_headline_snapshot"] as? String ?? "",
-            reviewSummarySnapshot: row["review_summary_snapshot"] as? String ?? "",
-            reviewTakeawaySnapshot: row["review_takeaway_snapshot"] as? String
+            note: row.string("note"),
+            goalSnapshot: row.string("goal_snapshot") ?? "",
+            reviewHeadlineSnapshot: row.string("review_headline_snapshot") ?? "",
+            reviewSummarySnapshot: row.string("review_summary_snapshot") ?? "",
+            reviewTakeawaySnapshot: row.string("review_takeaway_snapshot")
         )
     }
 
@@ -233,7 +238,15 @@ public final class SessionStore {
 
         var rows: [SessionReviewFeedback] = []
         while sqlite3_step(statement) == SQLITE_ROW {
-            let sessionID = string(from: statement, index: 0) ?? UUID().uuidString
+            guard
+                let sessionID = string(from: statement, index: 0),
+                let goalSnapshot = string(from: statement, index: 4),
+                let reviewHeadlineSnapshot = string(from: statement, index: 5),
+                let reviewSummarySnapshot = string(from: statement, index: 6)
+            else {
+                reportStoreIssue("Skipping malformed review feedback row.")
+                continue
+            }
             let createdAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 1))
             let wasHelpful = sqlite3_column_int(statement, 2) != 0
             let note = string(from: statement, index: 3)
@@ -243,9 +256,9 @@ public final class SessionStore {
                     createdAt: createdAt,
                     wasHelpful: wasHelpful,
                     note: note,
-                    goalSnapshot: string(from: statement, index: 4) ?? "",
-                    reviewHeadlineSnapshot: string(from: statement, index: 5) ?? "",
-                    reviewSummarySnapshot: string(from: statement, index: 6) ?? "",
+                    goalSnapshot: goalSnapshot,
+                    reviewHeadlineSnapshot: reviewHeadlineSnapshot,
+                    reviewSummarySnapshot: reviewSummarySnapshot,
                     reviewTakeawaySnapshot: string(from: statement, index: 7)
                 )
             )
@@ -340,12 +353,19 @@ public final class SessionStore {
                 WHERE id = 1
                 LIMIT 1
                 """),
-            let updatedAtValue = row["updated_at"] as? Double,
-            let sourceFeedbackCount = row["source_feedback_count"] as? Int,
-            let learningJSON = row["learning_json"] as? String,
-            let data = learningJSON.data(using: .utf8),
-            let learnings = try? jsonDecoder.decode([String].self, from: data)
+            let updatedAtValue = row.double("updated_at"),
+            let sourceFeedbackCount = row.int("source_feedback_count"),
+            let learningJSON = row.string("learning_json"),
+            let data = learningJSON.data(using: .utf8)
         else {
+            return nil
+        }
+
+        let learnings: [String]
+        do {
+            learnings = try jsonDecoder.decode([String].self, from: data)
+        } catch {
+            reportStoreIssue("Ignoring malformed review learning memory: \(error.localizedDescription)")
             return nil
         }
 
@@ -482,16 +502,28 @@ public final class SessionStore {
         sqlite3_bind_int(statement, 1, Int32(limit))
 
         while sqlite3_step(statement) == SQLITE_ROW {
-            let id = string(from: statement, index: 0) ?? UUID().uuidString
-            let goal = string(from: statement, index: 1) ?? "Untitled Session"
+            guard
+                let id = string(from: statement, index: 0),
+                let goal = string(from: statement, index: 1),
+                let reviewStatusRaw = string(from: statement, index: 7),
+                let reviewStatus = ReviewStatus(rawValue: reviewStatusRaw),
+                let labelsJSON = string(from: statement, index: 8)
+            else {
+                reportStoreIssue("Skipping malformed session history row.")
+                continue
+            }
             let startedAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 2))
             let endedAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
             let verdict = string(from: statement, index: 4).flatMap(SessionVerdict.init(rawValue:))
             let headline = string(from: statement, index: 5)
             let summary = string(from: statement, index: 6)
-            let reviewStatus = string(from: statement, index: 7).flatMap(ReviewStatus.init(rawValue:)) ?? .none
-            let labelsJSON = string(from: statement, index: 8) ?? "[]"
-            let labels = (try? jsonDecoder.decode([String].self, from: Data(labelsJSON.utf8))) ?? []
+            let labels: [String]
+            do {
+                labels = try jsonDecoder.decode([String].self, from: Data(labelsJSON.utf8))
+            } catch {
+                reportStoreIssue("Skipping session \(id) due to malformed primary labels JSON: \(error.localizedDescription)")
+                continue
+            }
             results.append(
                 StoredSession(
                     id: id,
@@ -563,7 +595,7 @@ public final class SessionStore {
                 sqlite3_bind_text(statement, 1, excludingSessionID, -1, SQLITE_TRANSIENT)
             }
         })
-        let sessionCount = sessionCountRow?["session_count"] as? Int ?? 0
+        let sessionCount = sessionCountRow?.int("session_count") ?? 0
         guard sessionCount > 0 else { return nil }
 
         func rankedSurfaceLines(for roles: [SessionSegmentRole]) -> [String] {
@@ -685,10 +717,16 @@ public final class SessionStore {
         sqlite3_bind_text(statement, 1, sessionID, -1, SQLITE_TRANSIENT)
 
         while sqlite3_step(statement) == SQLITE_ROW {
-            if let json = string(from: statement, index: 0),
-               let data = json.data(using: .utf8),
-               let segment = try? jsonDecoder.decode(TimelineSegment.self, from: data) {
-                segments.append(segment)
+            guard let json = string(from: statement, index: 0),
+                  let data = json.data(using: .utf8) else {
+                reportStoreIssue("Skipping malformed session segment payload for session \(sessionID).")
+                continue
+            }
+
+            do {
+                segments.append(try jsonDecoder.decode(TimelineSegment.self, from: data))
+            } catch {
+                reportStoreIssue("Skipping malformed session segment for session \(sessionID): \(error.localizedDescription)")
             }
         }
         return segments
@@ -711,12 +749,22 @@ public final class SessionStore {
         guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
 
         let generatedAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 0))
-        let providerTitle = string(from: statement, index: 1) ?? "Ollama"
+        guard let providerTitle = string(from: statement, index: 1) else {
+            reportStoreIssue("Skipping malformed review row for session \(sessionID): missing provider title.")
+            return nil
+        }
         guard
             let json = string(from: statement, index: 2),
-            let data = json.data(using: .utf8),
-            let review = try? jsonDecoder.decode(SessionReview.self, from: data)
+            let data = json.data(using: .utf8)
         else {
+            reportStoreIssue("Skipping malformed review row for session \(sessionID): missing review payload.")
+            return nil
+        }
+        let review: SessionReview
+        do {
+            review = try jsonDecoder.decode(SessionReview.self, from: data)
+        } catch {
+            reportStoreIssue("Skipping malformed review for session \(sessionID): \(error.localizedDescription)")
             return nil
         }
         return StoredSessionReview(
@@ -735,7 +783,7 @@ public final class SessionStore {
             let row = queryRow(db, sql: "SELECT raw_event_count FROM sessions WHERE id = ?", bind: {
                 sqlite3_bind_text($0, 1, sessionID, -1, SQLITE_TRANSIENT)
             }),
-            let count = row["raw_event_count"] as? Int
+            let count = row.int("raw_event_count")
         else {
             return nil
         }
@@ -754,25 +802,44 @@ public final class SessionStore {
 
         var events: [ActivityEvent] = []
         while sqlite3_step(statement) == SQLITE_ROW {
-            if let json = string(from: statement, index: 0),
-               let data = json.data(using: .utf8),
-               let event = try? jsonDecoder.decode(ActivityEvent.self, from: data) {
-                events.append(event)
+            guard let json = string(from: statement, index: 0),
+                  let data = json.data(using: .utf8) else {
+                reportStoreIssue("Skipping malformed raw event payload.")
+                continue
+            }
+
+            do {
+                events.append(try jsonDecoder.decode(ActivityEvent.self, from: data))
+            } catch {
+                reportStoreIssue("Skipping malformed raw event: \(error.localizedDescription)")
             }
         }
         return events
     }
 
     private func openDatabase() {
-        try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-        guard sqlite3_open(path.path, &db) == SQLITE_OK else {
-            if let db {
-                sqlite3_close(db)
-            }
+        do {
+            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        } catch {
+            let storeError = SessionStoreError.sqlite(message: "Driftly could not prepare its local database directory: \(error.localizedDescription)")
+            startupError = storeError
+            reportStoreIssue(storeError.localizedDescription)
             db = nil
             return
         }
 
+        guard sqlite3_open(path.path, &db) == SQLITE_OK else {
+            let message = currentSQLiteError(on: db)
+            if let db {
+                sqlite3_close(db)
+            }
+            startupError = .sqlite(message: message)
+            reportStoreIssue(message)
+            db = nil
+            return
+        }
+
+        startupError = nil
         sqlite3_busy_timeout(db, 2_500)
         _ = sqlite3_exec(db, "PRAGMA foreign_keys = ON", nil, nil, nil)
         _ = sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
@@ -1233,11 +1300,69 @@ private func prepare(_ db: OpaquePointer, sql: String) -> OpaquePointer? {
     return statement
 }
 
+private enum SQLiteValue {
+    case integer(Int)
+    case real(Double)
+    case text(String)
+    case null
+
+    var intValue: Int? {
+        switch self {
+        case let .integer(value):
+            return value
+        case let .real(value):
+            return Int(exactly: value)
+        case .text, .null:
+            return nil
+        }
+    }
+
+    var doubleValue: Double? {
+        switch self {
+        case let .integer(value):
+            return Double(value)
+        case let .real(value):
+            return value
+        case .text, .null:
+            return nil
+        }
+    }
+
+    var stringValue: String? {
+        switch self {
+        case let .text(value):
+            return value
+        case .integer, .real, .null:
+            return nil
+        }
+    }
+}
+
+private struct SQLiteRow {
+    private let values: [String: SQLiteValue]
+
+    init(values: [String: SQLiteValue]) {
+        self.values = values
+    }
+
+    func int(_ key: String) -> Int? {
+        values[key]?.intValue
+    }
+
+    func double(_ key: String) -> Double? {
+        values[key]?.doubleValue
+    }
+
+    func string(_ key: String) -> String? {
+        values[key]?.stringValue
+    }
+}
+
 private func queryRow(
     _ db: OpaquePointer,
     sql: String,
     bind: ((OpaquePointer?) -> Void)? = nil
-) -> [String: Any]? {
+) -> SQLiteRow? {
     guard let statement = prepare(db, sql: sql) else {
         return nil
     }
@@ -1245,23 +1370,27 @@ private func queryRow(
     bind?(statement)
     guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
 
-    var result: [String: Any] = [:]
+    var result: [String: SQLiteValue] = [:]
     let count = sqlite3_column_count(statement)
     for index in 0..<count {
         let key = String(cString: sqlite3_column_name(statement, index))
         let type = sqlite3_column_type(statement, index)
         switch type {
         case SQLITE_INTEGER:
-            result[key] = Int(sqlite3_column_int64(statement, index))
+            result[key] = .integer(Int(sqlite3_column_int64(statement, index)))
         case SQLITE_FLOAT:
-            result[key] = sqlite3_column_double(statement, index)
+            result[key] = .real(sqlite3_column_double(statement, index))
         case SQLITE_TEXT:
-            result[key] = string(from: statement, index: index)
+            if let value = string(from: statement, index: index) {
+                result[key] = .text(value)
+            } else {
+                result[key] = .null
+            }
         default:
-            result[key] = nil as String?
+            result[key] = .null
         }
     }
-    return result
+    return SQLiteRow(values: result)
 }
 
 private func string(from statement: OpaquePointer?, index: Int32) -> String? {
@@ -1282,6 +1411,13 @@ private func currentSQLiteError(on db: OpaquePointer?) -> String {
         return "Unknown SQLite error."
     }
     return String(cString: error)
+}
+
+private func reportStoreIssue(_ message: String?) {
+    guard let message else { return }
+    let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    fputs("SessionStore: \(trimmed)\n", stderr)
 }
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)

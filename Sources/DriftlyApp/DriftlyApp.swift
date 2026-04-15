@@ -3,22 +3,7 @@ import Combine
 import SwiftUI
 
 @MainActor
-enum DriftlyAppEnvironment {
-    static let model = AppModel()
-}
-
-@MainActor
-enum DriftlyWindowController {
-    static weak var controller: DriftlyAppController?
-
-    static func showMainWindow() {
-        controller?.showMainWindow()
-    }
-
-    static func quitApp() {
-        controller?.quitApp()
-    }
-
+enum DriftlyWindowStyle {
     static func configure(_ window: NSWindow) {
         window.title = "Driftly"
         window.titleVisibility = .hidden
@@ -31,16 +16,24 @@ enum DriftlyWindowController {
 
 @MainActor
 final class DriftlyAppController: NSObject, NSApplicationDelegate {
-    private let model = DriftlyAppEnvironment.model
+    private let model: AppModel
     private var mainWindow: NSWindow?
     private var statusItem: NSStatusItem?
     private var statusMenu: NSMenu?
     private var statusTimer: Timer?
     private var cancellables: Set<AnyCancellable> = []
 
+    init(model: AppModel) {
+        self.model = model
+        super.init()
+    }
+
+    convenience override init() {
+        self.init(model: AppModel())
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        DriftlyWindowController.controller = self
         installMainMenuIfNeeded()
         installMainWindowIfNeeded()
         installStatusItemIfNeeded()
@@ -65,7 +58,7 @@ final class DriftlyAppController: NSObject, NSApplicationDelegate {
     func showMainWindow() {
         installMainWindowIfNeeded()
         guard let window = mainWindow else { return }
-        DriftlyWindowController.configure(window)
+        DriftlyWindowStyle.configure(window)
         NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
@@ -86,7 +79,7 @@ final class DriftlyAppController: NSObject, NSApplicationDelegate {
         window.minSize = NSSize(width: 728, height: 500)
         window.isReleasedWhenClosed = false
         window.center()
-        DriftlyWindowController.configure(window)
+        DriftlyWindowStyle.configure(window)
         mainWindow = window
     }
 

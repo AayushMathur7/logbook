@@ -160,6 +160,9 @@ final class AppModel: ObservableObject {
         }
         refreshHistory()
         hydrateLatestSession()
+        if let startupError = store.startupError {
+            assignErrorMessage(startupError)
+        }
         installPermissionObservers()
         reconcilePermissionRefreshTimer()
         start()
@@ -379,7 +382,11 @@ final class AppModel: ObservableObject {
         refreshFileMonitorRoots()
         startShellImport()
         importShellCommands()
-        try? store.pruneRawEvents(olderThan: captureSettings.rawEventRetentionDays)
+        do {
+            try store.pruneRawEvents(olderThan: captureSettings.rawEventRetentionDays)
+        } catch {
+            assignErrorMessage(error)
+        }
     }
 
     func stop() {
@@ -1021,9 +1028,15 @@ final class AppModel: ObservableObject {
             reviewStatus: .pending,
             primaryLabels: TimelineDeriver.primaryLabels(from: segments)
         )
-        try? store.saveSession(pendingSession, review: nil, segments: segments, rawEventCount: sessionEvents.count)
-        refreshHistory()
-        performReview(for: context)
+        do {
+            try store.saveSession(pendingSession, review: nil, segments: segments, rawEventCount: sessionEvents.count)
+            refreshHistory()
+            performReview(for: context)
+        } catch {
+            completedSessionContext = nil
+            surfaceState = .setup
+            assignErrorMessage(error)
+        }
     }
 
     private func performReview(for context: CompletedSessionContext) {
@@ -1251,7 +1264,11 @@ final class AppModel: ObservableObject {
             )
             try store.saveReviewLearningMemory(memory)
         } catch {
-            // Keep prior learning memory on failure.
+            ReviewDebugLogger.logReviewFailure(
+                sessionTitle: "Learning memory refresh",
+                error: error.localizedDescription
+            )
+            assignErrorMessage(error)
         }
     }
 

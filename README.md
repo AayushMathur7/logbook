@@ -6,6 +6,8 @@ Driftly is a Mac app that watches your work session, can quietly nudge you when 
 
 You start a focus block with a clear plan and end it with a fuzzy memory. Most productivity tools tell you how long you worked, not whether you stayed on track. Driftly gives you a quick recap you can actually use before the next session.
 
+Site: [driftly.sh](https://driftly.sh)
+
 ## Why Use It
 
 Most focus tools either track time or block distractions. Driftly is trying to answer a different question:
@@ -42,8 +44,7 @@ That builds `dist/Driftly.app` and opens it.
 There is nothing big to learn.
 
 If your review provider is not installed or signed in yet, Driftly still saves the session, but it will not generate a review.
-
-There is no fallback cloud review.
+Reviews only run through the provider you configure in Settings.
 
 ## What You Need
 
@@ -58,6 +59,12 @@ Optional:
 ```zsh
 source "/absolute/path/to/driftly/integrations/shell/driftly.zsh"
 ```
+
+Driftly uses one current storage path:
+
+- app data: `~/Library/Application Support/Driftly/`
+- database: `~/Library/Application Support/Driftly/driftly.sqlite`
+- shell integration: `integrations/shell/driftly.zsh`
 
 ## Easy To Trust
 
@@ -105,8 +112,11 @@ Run checks:
 bash scripts/check.sh
 ```
 
+This repo only documents and supports the current Driftly paths and naming.
+
 ## Docs
 
+- [driftly.sh](https://driftly.sh)
 - [docs/install.md](/Users/aayush/ai-projects/driftly/docs/install.md:1)
 - [docs/launch-checklist.md](/Users/aayush/ai-projects/driftly/docs/launch-checklist.md:1)
 - [AGENT.md](/Users/aayush/ai-projects/driftly/AGENT.md:1)

@@ -196,4 +196,29 @@ public enum ActivityFormatting {
         formatter.timeStyle = .short
         return formatter
     }()
+
+    public static let historyMonthYear: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMMM, yyyy"
+        return formatter
+    }()
+
+    public static func historySessionStamp(startedAt: Date, endedAt: Date) -> String {
+        let day = Calendar.current.component(.day, from: startedAt)
+        return "\(day)\(ordinalSuffix(for: day)) \(historyMonthYear.string(from: startedAt)) · \(shortTime.string(from: startedAt)) to \(shortTime.string(from: endedAt))"
+    }
+
+    public static func ordinalSuffix(for day: Int) -> String {
+        let tens = day % 100
+        if tens >= 11 && tens <= 13 {
+            return "th"
+        }
+
+        switch day % 10 {
+        case 1: return "st"
+        case 2: return "nd"
+        case 3: return "rd"
+        default: return "th"
+        }
+    }
 }
