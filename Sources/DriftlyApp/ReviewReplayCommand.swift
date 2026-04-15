@@ -28,9 +28,10 @@ enum ReviewReplayCommand {
     private static func runAsync(options: Options) async -> Int {
         let store = SessionStore()
         let settings = store.loadCaptureSettings()
-        let model = settings.ollama.modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let provider = AIProviderBridge.provider(for: settings.reviewProvider)
 
-        guard !model.isEmpty else {
+        if settings.reviewProvider == .ollama,
+           settings.ollama.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             fputs("No Ollama model is selected in Driftly settings.\n", stderr)
             return 1
         }
@@ -40,8 +41,6 @@ enum ReviewReplayCommand {
             fputs("No matching stored sessions were found.\n", stderr)
             return 1
         }
-
-        let provider = AIProviderBridge.ollama
         var exitCode = 0
 
         for session in sessions {
@@ -57,7 +56,7 @@ enum ReviewReplayCommand {
 
             do {
                 let run = try await provider.generateReview(
-                    configuration: settings.ollama,
+                    settings: settings,
                     title: detail.session.goal,
                     personName: nil,
                     contextPattern: store.contextPatternSnapshot(goal: detail.session.goal, excludingSessionID: detail.session.id),

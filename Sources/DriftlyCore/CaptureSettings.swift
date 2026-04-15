@@ -1,5 +1,22 @@
 import Foundation
 
+public enum AIReviewProvider: String, Codable, Hashable, CaseIterable {
+    case ollama
+    case codex
+    case claude
+
+    public var displayName: String {
+        switch self {
+        case .ollama:
+            return "Ollama"
+        case .codex:
+            return "Codex CLI"
+        case .claude:
+            return "Claude Code"
+        }
+    }
+}
+
 public struct OllamaConfiguration: Codable, Hashable {
     public var baseURLString: String
     public var modelName: String
@@ -16,6 +33,38 @@ public struct OllamaConfiguration: Codable, Hashable {
         self.modelName = modelName
         self.timeoutSeconds = timeoutSeconds
         self.storeDebugIO = storeDebugIO
+    }
+}
+
+public struct ChatCLIConfiguration: Codable, Hashable {
+    public static let preferredCodexModelName = "gpt-5.4"
+    public static let preferredClaudeModelName = "opus"
+
+    public var codexModelName: String
+    public var claudeModelName: String
+    public var timeoutSeconds: Int
+    public var storeDebugIO: Bool
+
+    public init(
+        codexModelName: String = ChatCLIConfiguration.preferredCodexModelName,
+        claudeModelName: String = ChatCLIConfiguration.preferredClaudeModelName,
+        timeoutSeconds: Int = 90,
+        storeDebugIO: Bool = false
+    ) {
+        self.codexModelName = codexModelName
+        self.claudeModelName = claudeModelName
+        self.timeoutSeconds = timeoutSeconds
+        self.storeDebugIO = storeDebugIO
+    }
+
+    public var resolvedCodexModelName: String {
+        let trimmed = codexModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? Self.preferredCodexModelName : trimmed
+    }
+
+    public var resolvedClaudeModelName: String {
+        let trimmed = claudeModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? Self.preferredClaudeModelName : trimmed
     }
 }
 
@@ -38,7 +87,9 @@ public struct CaptureSettings: Codable, Hashable {
     public var droppedShellDirectoryPrefixes: [String]
     public var summaryOnlyDomains: [String]
     public var rawEventRetentionDays: Int
+    public var reviewProvider: AIReviewProvider
     public var ollama: OllamaConfiguration
+    public var chatCLI: ChatCLIConfiguration
 
     public init(
         focusGuardEnabled: Bool = true,
@@ -59,7 +110,9 @@ public struct CaptureSettings: Codable, Hashable {
         droppedShellDirectoryPrefixes: [String] = [],
         summaryOnlyDomains: [String] = [],
         rawEventRetentionDays: Int = 30,
-        ollama: OllamaConfiguration = OllamaConfiguration()
+        reviewProvider: AIReviewProvider = .ollama,
+        ollama: OllamaConfiguration = OllamaConfiguration(),
+        chatCLI: ChatCLIConfiguration = ChatCLIConfiguration()
     ) {
         let resolvedFocusGuardPreset = focusGuardPreset ?? (focusGuardEnabled ? .balanced : .off)
         self.focusGuardEnabled = resolvedFocusGuardPreset != .off
@@ -80,7 +133,9 @@ public struct CaptureSettings: Codable, Hashable {
         self.droppedShellDirectoryPrefixes = droppedShellDirectoryPrefixes
         self.summaryOnlyDomains = summaryOnlyDomains
         self.rawEventRetentionDays = rawEventRetentionDays
+        self.reviewProvider = reviewProvider
         self.ollama = ollama
+        self.chatCLI = chatCLI
     }
 
     public static let `default` = CaptureSettings()
@@ -104,7 +159,9 @@ public struct CaptureSettings: Codable, Hashable {
         case droppedShellDirectoryPrefixes
         case summaryOnlyDomains
         case rawEventRetentionDays
+        case reviewProvider
         case ollama
+        case chatCLI
     }
 
     public init(from decoder: Decoder) throws {
@@ -128,7 +185,9 @@ public struct CaptureSettings: Codable, Hashable {
         droppedShellDirectoryPrefixes = try container.decodeIfPresent([String].self, forKey: .droppedShellDirectoryPrefixes) ?? []
         summaryOnlyDomains = try container.decodeIfPresent([String].self, forKey: .summaryOnlyDomains) ?? []
         rawEventRetentionDays = try container.decodeIfPresent(Int.self, forKey: .rawEventRetentionDays) ?? 30
+        reviewProvider = try container.decodeIfPresent(AIReviewProvider.self, forKey: .reviewProvider) ?? .ollama
         ollama = try container.decodeIfPresent(OllamaConfiguration.self, forKey: .ollama) ?? OllamaConfiguration()
+        chatCLI = try container.decodeIfPresent(ChatCLIConfiguration.self, forKey: .chatCLI) ?? ChatCLIConfiguration()
     }
 }
 public enum PrivacyFilter {

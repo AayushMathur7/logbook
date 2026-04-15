@@ -174,7 +174,11 @@ final class DriftlyAppController: NSObject, NSApplicationDelegate {
 
     private func refreshStatusItem() {
         guard let button = statusItem?.button else { return }
-        button.image = DriftlyBrandImageFactory.defaultMenuBarImage
+        if let elapsed = model.sessionElapsedLabel() {
+            button.image = DriftlyBrandImageFactory.sessionMenuBarImage(elapsed: elapsed)
+        } else {
+            button.image = DriftlyBrandImageFactory.defaultMenuBarImage
+        }
         button.imageScaling = .scaleProportionallyDown
         button.title = ""
         button.attributedTitle = NSAttributedString(string: "")

@@ -18,14 +18,14 @@ From the repo root:
 
 - macOS 13 or newer
 - Accessibility permission if you want window titles and stronger context
-- a local Ollama install if you want AI review
+- Ollama, Codex CLI, or Claude Code if you want AI review
 - shell integration if you want terminal commands captured
 
 ## Review generation
 
-Session review generation is Ollama-only.
+Session review generation can run through Ollama, Codex CLI, or Claude Code.
 
-If Ollama is not installed or no model is configured, Driftly still saves the session and timeline, but it does not generate a review.
+If your selected AI provider is not installed, signed in, or configured, Driftly still saves the session and timeline, but it does not generate a review.
 
 ## Validation
 

@@ -16,9 +16,9 @@ struct LocalReviewRun {
 }
 
 protocol LocalReviewProvider {
-    func availableModels(configuration: OllamaConfiguration) async throws -> [OllamaModel]
+    func availableModels(settings: CaptureSettings) async throws -> [OllamaModel]
     func generateReview(
-        configuration: OllamaConfiguration,
+        settings: CaptureSettings,
         title: String,
         personName: String?,
         contextPattern: ContextPatternSnapshot?,
@@ -30,7 +30,7 @@ protocol LocalReviewProvider {
         segments: [TimelineSegment]
     ) async throws -> LocalReviewRun
     func generateFocusGuardNudge(
-        configuration: OllamaConfiguration,
+        settings: CaptureSettings,
         goal: String,
         assessmentReason: String,
         driftLabels: [String],
@@ -38,7 +38,7 @@ protocol LocalReviewProvider {
         events: [ActivityEvent]
     ) async throws -> String
     func summarizeLearningMemory(
-        configuration: OllamaConfiguration,
+        settings: CaptureSettings,
         personName: String?,
         feedbackExamples: [SessionReviewFeedbackExample]
     ) async throws -> SessionReviewLearningMemory
@@ -46,9 +46,26 @@ protocol LocalReviewProvider {
 
 enum AIProviderBridge: LocalReviewProvider {
     case ollama
+    case codex
+    case claude
 
-    func availableModels(configuration: OllamaConfiguration) async throws -> [OllamaModel] {
-        let endpoint = try validatedBaseURL(from: configuration).appending(path: "/api/tags")
+    static func provider(for provider: AIReviewProvider) -> AIProviderBridge {
+        switch provider {
+        case .ollama:
+            return .ollama
+        case .codex:
+            return .codex
+        case .claude:
+            return .claude
+        }
+    }
+
+    func availableModels(settings: CaptureSettings) async throws -> [OllamaModel] {
+        guard case .ollama = self else {
+            return []
+        }
+
+        let endpoint = try validatedBaseURL(from: settings.ollama).appending(path: "/api/tags")
         let (data, _) = try await URLSession.shared.data(from: endpoint)
         let response = try JSONDecoder().decode(OllamaTagsResponse.self, from: data)
         return response.models
@@ -57,7 +74,7 @@ enum AIProviderBridge: LocalReviewProvider {
     }
 
     func generateReview(
-        configuration: OllamaConfiguration,
+        settings: CaptureSettings,
         title: String,
         personName: String?,
         contextPattern: ContextPatternSnapshot?,
@@ -68,11 +85,6 @@ enum AIProviderBridge: LocalReviewProvider {
         events: [ActivityEvent],
         segments: [TimelineSegment]
     ) async throws -> LocalReviewRun {
-        let baseURL = try validatedBaseURL(from: configuration)
-        guard !configuration.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw OllamaError.missingModel
-        }
-
         let primaryPrompt = sessionReviewPrompt(
             title: title,
             personName: personName,
@@ -84,62 +96,104 @@ enum AIProviderBridge: LocalReviewProvider {
             events: events,
             segments: segments
         )
-        return try await generateReviewRun(
-            configuration: configuration,
-            baseURL: baseURL,
-            prompt: primaryPrompt,
-            title: title,
-            personName: personName,
-            startedAt: startedAt,
-            endedAt: endedAt,
-            events: events,
-            segments: segments
-        )
+
+        switch self {
+        case .ollama:
+            let configuration = settings.ollama
+            let baseURL = try validatedBaseURL(from: configuration)
+            guard !configuration.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw OllamaError.missingModel
+            }
+
+            return try await generateOllamaReviewRun(
+                configuration: configuration,
+                baseURL: baseURL,
+                prompt: primaryPrompt,
+                title: title,
+                personName: personName,
+                startedAt: startedAt,
+                endedAt: endedAt,
+                events: events,
+                segments: segments
+            )
+        case .codex, .claude:
+            let tool = chatCLITool
+            let run = try ChatCLIReviewRunner.runStructuredJSON(
+                tool: tool,
+                prompt: primaryPrompt,
+                schemaJSON: structuredOutputSchemaJSON(for: .sessionReview),
+                model: configuredCLIModel(from: settings.chatCLI),
+                timeoutSeconds: settings.chatCLI.timeoutSeconds
+            )
+            let review = try parseSessionReview(
+                from: run.output,
+                title: title,
+                personName: personName,
+                startedAt: startedAt,
+                endedAt: endedAt,
+                events: events,
+                segments: segments
+            )
+            return LocalReviewRun(
+                providerTitle: tool.displayName,
+                prompt: primaryPrompt,
+                rawResponse: run.output,
+                review: review
+            )
+        }
     }
 
     func summarizeLearningMemory(
-        configuration: OllamaConfiguration,
+        settings: CaptureSettings,
         personName: String?,
         feedbackExamples: [SessionReviewFeedbackExample]
     ) async throws -> SessionReviewLearningMemory {
-        let baseURL = try validatedBaseURL(from: configuration)
-        guard !configuration.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw OllamaError.missingModel
-        }
-
         let prompt = feedbackLearningPrompt(personName: personName, feedbackExamples: feedbackExamples)
 
-        var request = URLRequest(url: baseURL.appending(path: "/api/generate"))
-        request.httpMethod = "POST"
-        request.timeoutInterval = TimeInterval(max(configuration.timeoutSeconds, 10))
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(
-            OllamaGenerateRequest(
-                model: configuration.modelName,
-                prompt: prompt,
-                stream: false,
-                format: nil
-            )
-        )
+        switch self {
+        case .ollama:
+            let configuration = settings.ollama
+            let baseURL = try validatedBaseURL(from: configuration)
+            guard !configuration.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw OllamaError.missingModel
+            }
 
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let response = try JSONDecoder().decode(OllamaGenerateResponse.self, from: data)
-        return try parseLearningMemory(from: response.response, sourceFeedbackCount: feedbackExamples.count)
+            var request = URLRequest(url: baseURL.appending(path: "/api/generate"))
+            request.httpMethod = "POST"
+            request.timeoutInterval = TimeInterval(max(configuration.timeoutSeconds, 10))
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(
+                OllamaGenerateRequest(
+                    model: configuration.modelName,
+                    prompt: prompt,
+                    stream: false,
+                    format: nil
+                )
+            )
+
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let response = try JSONDecoder().decode(OllamaGenerateResponse.self, from: data)
+            return try parseLearningMemory(from: response.response, sourceFeedbackCount: feedbackExamples.count)
+        case .codex, .claude:
+            let run = try ChatCLIReviewRunner.runStructuredJSON(
+                tool: chatCLITool,
+                prompt: prompt,
+                schemaJSON: structuredOutputSchemaJSON(for: .learningMemory),
+                model: configuredCLIModel(from: settings.chatCLI),
+                timeoutSeconds: settings.chatCLI.timeoutSeconds
+            )
+            return try parseLearningMemory(from: run.output, sourceFeedbackCount: feedbackExamples.count)
+        }
     }
 
     func generateFocusGuardNudge(
-        configuration: OllamaConfiguration,
+        settings: CaptureSettings,
         goal: String,
         assessmentReason: String,
         driftLabels: [String],
         matchedLabels: [String],
         events: [ActivityEvent]
     ) async throws -> String {
-        let baseURL = try validatedBaseURL(from: configuration)
-        guard !configuration.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw OllamaError.missingModel
-        }
-
         let prompt = focusGuardNudgePrompt(
             goal: goal,
             assessmentReason: assessmentReason,
@@ -148,22 +202,39 @@ enum AIProviderBridge: LocalReviewProvider {
             events: events
         )
 
-        var request = URLRequest(url: baseURL.appending(path: "/api/generate"))
-        request.httpMethod = "POST"
-        request.timeoutInterval = TimeInterval(min(max(configuration.timeoutSeconds, 10), 20))
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(
-            OllamaGenerateRequest(
-                model: configuration.modelName,
-                prompt: prompt,
-                stream: false,
-                format: nil
-            )
-        )
+        switch self {
+        case .ollama:
+            let configuration = settings.ollama
+            let baseURL = try validatedBaseURL(from: configuration)
+            guard !configuration.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw OllamaError.missingModel
+            }
 
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let response = try JSONDecoder().decode(OllamaGenerateResponse.self, from: data)
-        return try parseFocusGuardNudge(from: response.response)
+            var request = URLRequest(url: baseURL.appending(path: "/api/generate"))
+            request.httpMethod = "POST"
+            request.timeoutInterval = TimeInterval(min(max(configuration.timeoutSeconds, 10), 20))
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(
+                OllamaGenerateRequest(
+                    model: configuration.modelName,
+                    prompt: prompt,
+                    stream: false,
+                    format: nil
+                )
+            )
+
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let response = try JSONDecoder().decode(OllamaGenerateResponse.self, from: data)
+            return try parseFocusGuardNudge(from: response.response)
+        case .codex, .claude:
+            let run = try ChatCLIReviewRunner.runPlainText(
+                tool: chatCLITool,
+                prompt: prompt,
+                model: configuredCLIModel(from: settings.chatCLI),
+                timeoutSeconds: min(max(settings.chatCLI.timeoutSeconds, 10), 20)
+            )
+            return try parseFocusGuardNudge(from: run.output)
+        }
     }
 
     private func validatedBaseURL(from configuration: OllamaConfiguration) throws -> URL {
@@ -176,7 +247,7 @@ enum AIProviderBridge: LocalReviewProvider {
         return url
     }
 
-    private func generateReviewRun(
+    private func generateOllamaReviewRun(
         configuration: OllamaConfiguration,
         baseURL: URL,
         prompt: String,
@@ -234,6 +305,28 @@ enum AIProviderBridge: LocalReviewProvider {
                 throw error
             }
             throw OllamaError.invalidReview("The local model did not return valid structured review output.")
+        }
+    }
+
+    private var chatCLITool: ChatCLITool {
+        switch self {
+        case .codex:
+            return .codex
+        case .claude:
+            return .claude
+        case .ollama:
+            preconditionFailure("Ollama does not map to a chat CLI tool.")
+        }
+    }
+
+    private func configuredCLIModel(from configuration: ChatCLIConfiguration) -> String? {
+        switch self {
+        case .codex:
+            return configuration.codexModelName.trimmedOrNil
+        case .claude:
+            return configuration.claudeModelName.trimmedOrNil
+        case .ollama:
+            return nil
         }
     }
 
@@ -366,8 +459,14 @@ enum AIProviderBridge: LocalReviewProvider {
         - `headline` must name what the block became, not just what app was open.
         - Do not use a bare activity phrase like "Watching YouTube videos" or "Using Chrome" as the headline.
         - Prefer calm judgment phrases like "This block shifted into...", "This session became...", "This stayed on...", or "This never really became..."
+        - Write the headline the way a sharp human would actually say it out loud.
+        - Prefer concrete, everyday wording like "repo work", "feed checking", "setup thrash", "tab hopping", "spec reading", or "video rabbit hole".
+        - Avoid abstract or consultant-style nouns like "alignment", "orientation", "fragmentation", "coherence", "optimization", "reconnaissance", "exploration", or "context switching".
+        - Do not turn the headline into a category label, framework label, or productivity diagnosis.
         - Do not use blamey or robotic phrases like "you got pulled into", "X took this block", "accounted for", or "you spent the session".
-        - `summary` may be one or two sentences and should stay under 55 words.
+        - `summary` should usually be exactly two short sentences and stay under 50 words total.
+        - Sentence 1 should say what mostly happened.
+        - Sentence 2 should say what weakened it, or what still held if it mostly stayed on task.
         - `summary` must explain the session shape, not just restate timing facts.
         - `summary` must add concrete evidence that is not already stated in the headline.
         - `summary` must include:
@@ -385,6 +484,10 @@ enum AIProviderBridge: LocalReviewProvider {
         - If a specific video, page, or document title is visible in the evidence, include it plainly.
         - If the title is generic, missing, or redacted, do not guess.
         - If the same block includes both browser-shell facts and site facts, trust the site facts and ignore the browser shell.
+        - Keep each sentence plain and direct. No semicolons, no em dashes, and no stacked clause chains.
+        - Prefer one useful title or surface over a long list of apps.
+        - Do not sound like a dashboard, analyst, or therapist.
+        - Bad summary wording: "led with", "was dominant across", "surfaced for", "fragmented across", "accounted for", "remained the dominant surface".
         - `insight` must be exactly one sentence and under 18 words.
         - `insight` must be one calm next move or framing correction, not a scolding command.
         - `insight` must be actionable right away, not just observational.
@@ -413,10 +516,14 @@ enum AIProviderBridge: LocalReviewProvider {
         - Prior pattern memory is soft context only. Use it to judge what is normal for this user, but never let it override the current-session facts.
         - `insight` must act on the same dominant distraction or winning surface already named in the headline or summary.
         - Do not introduce a new app or site in `insight` unless it clearly consumed more time than the named distraction.
+        - Good `summary` example: "Codex held about 9 minutes, but Telegram and Zoom kept breaking the thread."
+        - Good `summary` example: "Most of the block stayed on YouTube, mainly Taylor Swift interview clips. Codex only showed up in short checks."
         - Good `summary` example: "Most of the block stayed on YouTube, mainly Taylor Swift interview clips, while Codex only appeared briefly for about a minute."
         - Good `summary` example: "X held about 68% of the block, mostly on the Home feed, while Codex only showed up in short checks."
         - Bad `summary` example: "You spent the session primarily browsing social media."
         - Bad `summary` example: "The session involved content on several surfaces."
+        - Bad `summary` example: "Codex led with about 9 minutes, 30% of the block, around Open Agents and related pages."
+        - Bad `summary` example: "You stayed partly aligned while the block became fragmented repo orientation."
         - Keep `insight` plain text.
         - Do not output badges, extra keys, XML, code fences, or commentary outside the JSON object.
         - Do not mention instructions, examples, feedback machinery, scores, or hidden reasoning.
@@ -432,11 +539,18 @@ enum AIProviderBridge: LocalReviewProvider {
         - If the evidence is mixed, say that plainly instead of pretending certainty.
         - Do not say "you spent the session", "accounted for", "main goal", "returning to your main goal", or "refocus on".
         - Never say "desktop activity", "during this time period", "desired focus work", "stated goal", or "lack of concentration".
+        - Never say "fragmented repo orientation", "fragmented reconnaissance", "aligned exploration", "context switching spiral", or similar abstract rewrites.
         - Bad headline: "Watching YouTube videos"
         - Good headline: "This block shifted into YouTube"
         - Bad headline: "Session summary"
         - Good headline: "This session became feed checking"
         - Good headline: "This block stayed on the repo"
+        - Good headline: "This became repo hopping"
+        - Good headline: "This never really became repo study"
+        - Good headline: "This mostly stayed on setup"
+        - Bad headline: "This became fragmented repo orientation"
+        - Bad headline: "This became aligned research exploration"
+        - Bad headline: "This became productivity optimization"
 
         Goal: \(title)
         Time: \(ActivityFormatting.shortTime.string(from: startedAt)) to \(ActivityFormatting.shortTime.string(from: endedAt))
@@ -1110,6 +1224,19 @@ private struct OllamaJSONSchema: Encodable {
         required: ["headline", "summary", "insight"],
         additionalProperties: false
     )
+
+    static let learningMemory = OllamaJSONSchema(
+        type: "object",
+        properties: [
+            "learnings": OllamaJSONSchemaProperty(
+                type: "array",
+                description: "Short user-specific review framing rules.",
+                items: OllamaJSONSchemaProperty(type: "string")
+            ),
+        ],
+        required: ["learnings"],
+        additionalProperties: false
+    )
 }
 
 private final class OllamaJSONSchemaProperty: Encodable {
@@ -1160,6 +1287,26 @@ private struct StructuredSessionReviewPayload: Decodable {
         case summary
         case insight
     }
+}
+
+private enum StructuredOutputKind {
+    case sessionReview
+    case learningMemory
+}
+
+private func structuredOutputSchemaJSON(for kind: StructuredOutputKind) -> String {
+    let schema: OllamaJSONSchema
+    switch kind {
+    case .sessionReview:
+        schema = .sessionReview
+    case .learningMemory:
+        schema = .learningMemory
+    }
+
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let data = try? encoder.encode(schema)
+    return data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
 }
 
 private struct ParsedStructuredSessionReviewPayload {
@@ -1305,6 +1452,11 @@ private extension String {
     func trimmedOrFallback(_ fallback: String) -> String {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    var trimmedOrNil: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     var nilIfBlank: String? {

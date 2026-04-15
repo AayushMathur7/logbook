@@ -45,12 +45,19 @@ Driftly is designed to keep data on your Mac.
 
 ## AI review generation
 
-Driftly currently uses a local Ollama model for AI review generation.
+Driftly can use one of three AI review paths:
 
-- model calls are limited to a local Ollama host
-- there are no hidden remote model calls
+- Ollama
+- Codex CLI
+- Claude Code
 
-If Ollama is unavailable, the app can still save the session, but AI review generation will not run.
+What that means:
+
+- if you choose Ollama, model calls stay on a local Ollama host
+- if you choose Codex CLI or Claude Code, the prompt is sent through that authenticated CLI on your Mac and then to that provider's service
+- Driftly does not make hidden remote model calls outside the provider you selected
+
+If the selected provider is unavailable, the app can still save the session, but AI review generation will not run.
 
 ## User controls
 

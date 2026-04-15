@@ -27,6 +27,24 @@ struct PermissionOnboardingItem: Identifiable {
     var id: String { kind.rawValue }
 }
 
+private final class PermissionRefreshTimerTarget: NSObject {
+    weak var model: AppModel?
+
+    init(model: AppModel) {
+        self.model = model
+    }
+
+    @MainActor
+    @objc func tick(_ timer: Timer) {
+        guard let model else {
+            timer.invalidate()
+            return
+        }
+
+        model.handlePermissionRefreshTick(timer)
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var allEvents: [ActivityEvent]
@@ -51,10 +69,15 @@ final class AppModel: ObservableObject {
     @Published var redactedTitleBundleIDsInput = ""
     @Published var droppedShellDirectoryPrefixesInput = ""
     @Published var summaryOnlyDomainsInput = ""
+    @Published var reviewProviderSelection: AIReviewProvider = .ollama
     @Published var ollamaBaseURLInput = "http://127.0.0.1:11434"
     @Published var ollamaModelName = ""
     @Published var ollamaTimeoutInput = "90"
     @Published var ollamaStoreDebugIO = false
+    @Published var codexModelName = ""
+    @Published var claudeModelName = ""
+    @Published var chatCLITimeoutInput = "90"
+    @Published var chatCLIStoreDebugIO = false
     @Published var rawEventRetentionDaysInput = "30"
     @Published var errorMessage: String?
     @Published private(set) var activeSession: FocusSession?
@@ -66,8 +89,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var surfaceState: SessionScreenState = .setup
     @Published private(set) var accessibilityTrustedState: Bool
     @Published private(set) var availableOllamaModels: [OllamaModel] = []
-    @Published private(set) var ollamaStatusMessage = ""
-    @Published private(set) var ollamaStatusIsError = false
+    @Published private(set) var reviewProviderStatusMessage = ""
+    @Published private(set) var reviewProviderStatusIsError = false
+    @Published private(set) var codexCLIStatus = ChatCLIStatus(installed: false, authenticated: false, version: nil, message: "")
+    @Published private(set) var claudeCLIStatus = ChatCLIStatus(installed: false, authenticated: false, version: nil, message: "")
     @Published private(set) var activeSessionEventCount = 0
     @Published private(set) var historySessions: [StoredSession] = []
     @Published private(set) var selectedHistoryDetail: StoredSessionDetail?
@@ -82,11 +107,12 @@ final class AppModel: ObservableObject {
     private let monitor = ActivityMonitor()
     private let fileMonitor = FileActivityMonitor()
     private let store = SessionStore()
-    private let reviewProvider: any LocalReviewProvider = AIProviderBridge.ollama
     private let focusGuardNotifications = FocusGuardNotificationCoordinator()
     private let reviewDisplayName: String?
     private var shellImportTimer: Timer?
     private var sessionTimer: Timer?
+    private var permissionRefreshTimer: Timer?
+    private var permissionRefreshTimerTarget: PermissionRefreshTimerTarget?
     private var captureSettings: CaptureSettings
     private var completedSessionContext: CompletedSessionContext?
     private let memoryEventLimit = 5_000
@@ -108,10 +134,15 @@ final class AppModel: ObservableObject {
         self.redactedTitleBundleIDsInput = Self.multilineList(from: captureSettings.redactedTitleBundleIDs)
         self.droppedShellDirectoryPrefixesInput = Self.multilineList(from: captureSettings.droppedShellDirectoryPrefixes)
         self.summaryOnlyDomainsInput = Self.multilineList(from: captureSettings.summaryOnlyDomains)
+        self.reviewProviderSelection = captureSettings.reviewProvider
         self.ollamaBaseURLInput = captureSettings.ollama.baseURLString
         self.ollamaModelName = captureSettings.ollama.modelName
         self.ollamaTimeoutInput = String(captureSettings.ollama.timeoutSeconds)
         self.ollamaStoreDebugIO = captureSettings.ollama.storeDebugIO
+        self.codexModelName = captureSettings.chatCLI.resolvedCodexModelName
+        self.claudeModelName = captureSettings.chatCLI.resolvedClaudeModelName
+        self.chatCLITimeoutInput = String(captureSettings.chatCLI.timeoutSeconds)
+        self.chatCLIStoreDebugIO = captureSettings.chatCLI.storeDebugIO
         self.rawEventRetentionDaysInput = String(captureSettings.rawEventRetentionDays)
         self.focusGuardNotifications.onAction = { [weak self] action, sessionID in
             Task { @MainActor [weak self] in
@@ -130,13 +161,15 @@ final class AppModel: ObservableObject {
         refreshHistory()
         hydrateLatestSession()
         installPermissionObservers()
+        reconcilePermissionRefreshTimer()
         start()
         Task { [weak self] in
-            await self?.refreshAvailableModels()
+            await self?.refreshReviewProviderStatus()
         }
     }
 
     deinit {
+        permissionRefreshTimer?.invalidate()
         notificationObservers.forEach(NotificationCenter.default.removeObserver)
     }
 
@@ -179,9 +212,16 @@ final class AppModel: ObservableObject {
     }
 
     var localReviewConfigured: Bool {
-        let selected = selectedOllamaModelName
-        guard !selected.isEmpty else { return false }
-        return availableOllamaModels.contains(where: { $0.name == selected })
+        switch reviewProviderSelection {
+        case .ollama:
+            let selected = selectedOllamaModelName
+            guard !selected.isEmpty else { return false }
+            return availableOllamaModels.contains(where: { $0.name == selected })
+        case .codex:
+            return codexCLIStatus.installed && codexCLIStatus.authenticated
+        case .claude:
+            return claudeCLIStatus.installed && claudeCLIStatus.authenticated
+        }
     }
 
     var hasRunningSession: Bool {
@@ -203,26 +243,47 @@ final class AppModel: ObservableObject {
         return String(format: "%d:%02d", minutes, seconds)
     }
 
+    func sessionElapsedLabel(now: Date = Date()) -> String? {
+        guard let activeSession else { return nil }
+        let elapsed = max(Int(now.timeIntervalSince(activeSession.startedAt)), 0)
+        let hours = elapsed / 3600
+        let minutes = (elapsed % 3600) / 60
+        let seconds = elapsed % 60
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+
     var localReviewSetupSummary: String {
-        let selected = selectedOllamaModelName
+        switch reviewProviderSelection {
+        case .ollama:
+            let selected = selectedOllamaModelName
 
-        if localReviewConfigured {
-            return "Local AI review is ready with \(selected)."
+            if localReviewConfigured {
+                return "Local AI review is ready with \(selected)."
+            }
+
+            if reviewProviderStatusIsError {
+                return "AI review is not ready yet."
+            }
+
+            if !selected.isEmpty {
+                return "The selected Ollama model is not installed locally."
+            }
+
+            if availableOllamaModels.isEmpty {
+                return "No Ollama model is ready for AI review yet."
+            }
+
+            return "Driftly found local Ollama models. Pick one in Settings for AI review."
+        case .codex:
+            return codexCLIStatus.message.isEmpty ? "Codex CLI is not ready for AI review yet." : codexCLIStatus.message
+        case .claude:
+            return claudeCLIStatus.message.isEmpty ? "Claude Code is not ready for AI review yet." : claudeCLIStatus.message
         }
-
-        if ollamaStatusIsError {
-            return "AI review is not ready yet."
-        }
-
-        if !selected.isEmpty {
-            return "The selected model is not installed locally."
-        }
-
-        if availableOllamaModels.isEmpty {
-            return "No local model is ready for AI review yet."
-        }
-
-        return "Driftly found local models. Pick one in Settings for AI review."
     }
 
     var accessibilitySetupSummary: String? {
@@ -352,10 +413,32 @@ final class AppModel: ObservableObject {
         AccessibilityInspector.openSettings()
         _ = AccessibilityInspector.isTrusted(prompt: true)
         refreshPermissionStatuses()
+        reconcilePermissionRefreshTimer()
     }
 
     func openAccessibilitySettings() {
         AccessibilityInspector.openSettings()
+        reconcilePermissionRefreshTimer()
+    }
+
+    func openChatCLIInstallGuide(for tool: ChatCLITool) {
+        NSWorkspace.shared.open(tool.installGuideURL)
+    }
+
+    func openChatCLILogin(for tool: ChatCLITool) {
+        let command = tool.loginCommand
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+
+        _ = AppleScriptRunner.run(
+            """
+            tell application "Terminal"
+                activate
+                do script "\(command)"
+            end tell
+            """,
+            timeout: 1.5
+        )
     }
 
     func performPermissionOnboardingAction(for kind: PermissionOnboardingKind) {
@@ -374,27 +457,62 @@ final class AppModel: ObservableObject {
     }
 
     func refreshAvailableModels() async {
-        do {
-            let models = try await reviewProvider.availableModels(configuration: currentOllamaConfiguration())
-            availableOllamaModels = models
-            ollamaStatusIsError = false
+        await refreshReviewProviderStatus()
+    }
 
-            let selectedModel = ollamaModelName.trimmingCharacters(in: .whitespacesAndNewlines)
-            if models.isEmpty {
-                ollamaStatusMessage = "Connected to Ollama, but no local models are installed yet."
-            } else if selectedModel.isEmpty {
-                ollamaStatusMessage = "Connected to Ollama. Pick one of the \(models.count) detected models for AI review."
-            } else if models.contains(where: { $0.name == selectedModel }) {
-                ollamaStatusMessage = "Connected to Ollama. Using \(selectedModel) for AI review."
-            } else {
-                ollamaStatusMessage = "Connected to Ollama, but \(selectedModel) is not installed locally."
-                ollamaStatusIsError = true
+    func refreshReviewProviderStatus() async {
+        let detectedCodex = await Task.detached(priority: .userInitiated) {
+            ChatCLIReviewRunner.detect(tool: .codex)
+        }.value
+        let detectedClaude = await Task.detached(priority: .userInitiated) {
+            ChatCLIReviewRunner.detect(tool: .claude)
+        }.value
+        codexCLIStatus = detectedCodex
+        claudeCLIStatus = detectedClaude
+
+        switch reviewProviderSelection {
+        case .ollama:
+            do {
+                let models = try await AIProviderBridge.ollama.availableModels(settings: currentCaptureSettings())
+                availableOllamaModels = models
+                reviewProviderStatusIsError = false
+
+                let selectedModel = selectedOllamaModelName
+                if models.isEmpty {
+                    reviewProviderStatusMessage = "Connected to Ollama, but no local models are installed yet."
+                } else if selectedModel.isEmpty {
+                    reviewProviderStatusMessage = "Connected to Ollama. Pick one of the \(models.count) detected models for AI review."
+                } else if models.contains(where: { $0.name == selectedModel }) {
+                    reviewProviderStatusMessage = "Connected to Ollama. Using \(selectedModel) for AI review."
+                } else {
+                    reviewProviderStatusMessage = "Connected to Ollama, but \(selectedModel) is not installed locally."
+                    reviewProviderStatusIsError = true
+                }
+            } catch {
+                availableOllamaModels = []
+                reviewProviderStatusMessage = "Couldn’t reach Ollama at \(currentOllamaConfiguration().baseURLString)."
+                reviewProviderStatusIsError = true
             }
-        } catch {
-            availableOllamaModels = []
-            let baseURL = currentOllamaConfiguration().baseURLString
-            ollamaStatusMessage = "Couldn’t reach Ollama at \(baseURL)."
-            ollamaStatusIsError = true
+        case .codex:
+            let configuredModel = currentChatCLIConfiguration().codexModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if detectedCodex.installed && detectedCodex.authenticated {
+                reviewProviderStatusMessage = configuredModel.isEmpty
+                    ? "Codex CLI is installed and signed in. Using its default model."
+                    : "Codex CLI is installed and signed in. Using \(configuredModel)."
+            } else {
+                reviewProviderStatusMessage = detectedCodex.message
+            }
+            reviewProviderStatusIsError = !(detectedCodex.installed && detectedCodex.authenticated)
+        case .claude:
+            let configuredModel = currentChatCLIConfiguration().claudeModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if detectedClaude.installed && detectedClaude.authenticated {
+                reviewProviderStatusMessage = configuredModel.isEmpty
+                    ? "Claude Code is installed and signed in. Using its default model."
+                    : "Claude Code is installed and signed in. Using \(configuredModel)."
+            } else {
+                reviewProviderStatusMessage = detectedClaude.message
+            }
+            reviewProviderStatusIsError = !(detectedClaude.installed && detectedClaude.authenticated)
         }
     }
 
@@ -541,11 +659,18 @@ final class AppModel: ObservableObject {
             droppedShellDirectoryPrefixes: Self.parseMultilineList(droppedShellDirectoryPrefixesInput),
             summaryOnlyDomains: Self.parseMultilineList(summaryOnlyDomainsInput),
             rawEventRetentionDays: retentionDays,
+            reviewProvider: reviewProviderSelection,
             ollama: OllamaConfiguration(
                 baseURLString: ollamaBaseURLInput.trimmingCharacters(in: .whitespacesAndNewlines),
                 modelName: ollamaModelName.trimmingCharacters(in: .whitespacesAndNewlines),
                 timeoutSeconds: timeout,
                 storeDebugIO: ollamaStoreDebugIO
+            ),
+            chatCLI: ChatCLIConfiguration(
+                codexModelName: normalizedCodexModelName,
+                claudeModelName: normalizedClaudeModelName,
+                timeoutSeconds: max(Int(chatCLITimeoutInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 90, 10),
+                storeDebugIO: chatCLIStoreDebugIO
             )
         )
 
@@ -565,7 +690,7 @@ final class AppModel: ObservableObject {
             activeFocusGuardPrompt = nil
         }
         Task { [weak self] in
-            await self?.refreshAvailableModels()
+            await self?.refreshReviewProviderStatus()
         }
     }
 
@@ -581,6 +706,51 @@ final class AppModel: ObservableObject {
             modelName: ollamaModelName.trimmingCharacters(in: .whitespacesAndNewlines),
             timeoutSeconds: timeout,
             storeDebugIO: ollamaStoreDebugIO
+        )
+    }
+
+    private func currentChatCLIConfiguration() -> ChatCLIConfiguration {
+        ChatCLIConfiguration(
+            codexModelName: normalizedCodexModelName,
+            claudeModelName: normalizedClaudeModelName,
+            timeoutSeconds: max(Int(chatCLITimeoutInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 90, 10),
+            storeDebugIO: chatCLIStoreDebugIO
+        )
+    }
+
+    private var normalizedCodexModelName: String {
+        let trimmed = codexModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? ChatCLIConfiguration.preferredCodexModelName : trimmed
+    }
+
+    private var normalizedClaudeModelName: String {
+        let trimmed = claudeModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? ChatCLIConfiguration.preferredClaudeModelName : trimmed
+    }
+
+    private func currentCaptureSettings() -> CaptureSettings {
+        CaptureSettings(
+            focusGuardEnabled: captureSettings.focusGuardEnabled,
+            focusGuardPreset: captureSettings.focusGuardPreset,
+            trackAccessibilityTitles: captureSettings.trackAccessibilityTitles,
+            trackBrowserContext: captureSettings.trackBrowserContext,
+            trackFinderContext: captureSettings.trackFinderContext,
+            trackShellCommands: captureSettings.trackShellCommands,
+            trackFileSystemActivity: captureSettings.trackFileSystemActivity,
+            trackClipboard: captureSettings.trackClipboard,
+            trackPresence: captureSettings.trackPresence,
+            trackCalendarContext: captureSettings.trackCalendarContext,
+            fileWatchRoots: captureSettings.fileWatchRoots,
+            excludedAppBundleIDs: captureSettings.excludedAppBundleIDs,
+            excludedDomains: captureSettings.excludedDomains,
+            excludedPathPrefixes: captureSettings.excludedPathPrefixes,
+            redactedTitleBundleIDs: captureSettings.redactedTitleBundleIDs,
+            droppedShellDirectoryPrefixes: captureSettings.droppedShellDirectoryPrefixes,
+            summaryOnlyDomains: captureSettings.summaryOnlyDomains,
+            rawEventRetentionDays: captureSettings.rawEventRetentionDays,
+            reviewProvider: reviewProviderSelection,
+            ollama: currentOllamaConfiguration(),
+            chatCLI: currentChatCLIConfiguration()
         )
     }
 
@@ -702,6 +872,7 @@ final class AppModel: ObservableObject {
         trackPresence = settings.trackPresence
         focusGuardSettings = settings.focusGuardPreset.settings
         refreshPermissionStatuses()
+        reconcilePermissionRefreshTimer()
     }
 
     private func installPermissionObservers() {
@@ -712,6 +883,8 @@ final class AppModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.refreshPermissionStatuses()
+                self?.reconcilePermissionRefreshTimer()
+                await self?.refreshReviewProviderStatus()
             }
         }
         notificationObservers.append(observer)
@@ -719,6 +892,33 @@ final class AppModel: ObservableObject {
 
     private func refreshPermissionStatuses() {
         accessibilityTrustedState = AccessibilityInspector.isTrusted(prompt: false)
+    }
+
+    private func reconcilePermissionRefreshTimer() {
+        permissionRefreshTimer?.invalidate()
+        permissionRefreshTimer = nil
+        permissionRefreshTimerTarget = nil
+
+        guard trackAccessibilityTitles, !accessibilityTrustedState else { return }
+
+        let target = PermissionRefreshTimerTarget(model: self)
+        permissionRefreshTimerTarget = target
+        permissionRefreshTimer = Timer.scheduledTimer(
+            timeInterval: 2,
+            target: target,
+            selector: #selector(PermissionRefreshTimerTarget.tick(_:)),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+
+    fileprivate func handlePermissionRefreshTick(_ timer: Timer) {
+        refreshPermissionStatuses()
+        if !trackAccessibilityTitles || accessibilityTrustedState {
+            timer.invalidate()
+            permissionRefreshTimer = nil
+            permissionRefreshTimerTarget = nil
+        }
     }
 
     private func startShellImport() {
@@ -831,7 +1031,7 @@ final class AppModel: ObservableObject {
         guard !context.events.isEmpty else {
             ReviewDebugLogger.logReviewFailure(
                 sessionTitle: context.title,
-                error: "Not enough captured evidence to ask Ollama for a review."
+                error: "Not enough captured evidence to generate a review."
             )
             applyReviewFailure(
                 sessionID: context.sessionID,
@@ -841,15 +1041,16 @@ final class AppModel: ObservableObject {
                 segments: context.segments,
                 rawEventCount: context.events.count,
                 reviewStatus: .failed,
-                message: "Not enough captured evidence to ask Ollama for a review."
+                message: "Not enough captured evidence to generate a review."
             )
             return
         }
 
-        guard !captureSettings.ollama.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let settings = currentCaptureSettings()
+        if let setupIssue = reviewProviderSetupIssue(for: settings.reviewProvider) {
             ReviewDebugLogger.logReviewFailure(
                 sessionTitle: context.title,
-                error: "No Ollama model is selected for review generation."
+                error: setupIssue
             )
             applyReviewFailure(
                 sessionID: context.sessionID,
@@ -859,15 +1060,16 @@ final class AppModel: ObservableObject {
                 segments: context.segments,
                 rawEventCount: context.events.count,
                 reviewStatus: .unavailable,
-                message: "No Ollama model is selected for review generation."
+                message: setupIssue
             )
             return
         }
 
         Task {
             do {
-                let run = try await reviewProvider.generateReview(
-                    configuration: captureSettings.ollama,
+                let provider = AIProviderBridge.provider(for: settings.reviewProvider)
+                let run = try await provider.generateReview(
+                    settings: settings,
                     title: context.title,
                     personName: reviewDisplayName,
                     contextPattern: store.contextPatternSnapshot(goal: context.title, excludingSessionID: context.sessionID),
@@ -882,8 +1084,8 @@ final class AppModel: ObservableObject {
                     enrichSessionReview(run.review, events: context.events, segments: context.segments),
                     sessionID: context.sessionID,
                     providerTitle: run.providerTitle,
-                    prompt: captureSettings.ollama.storeDebugIO ? run.prompt : "",
-                    rawResponse: captureSettings.ollama.storeDebugIO ? run.rawResponse : "",
+                    prompt: shouldStoreDebugIO(for: settings.reviewProvider, settings: settings) ? run.prompt : "",
+                    rawResponse: shouldStoreDebugIO(for: settings.reviewProvider, settings: settings) ? run.rawResponse : "",
                     reviewStatus: .ready,
                     rawEventCount: context.events.count
                 )
@@ -896,9 +1098,9 @@ final class AppModel: ObservableObject {
                     segments: context.segments,
                     rawEventCount: context.events.count,
                     reviewStatus: .failed,
-                    message: "AI generation failed.",
-                    prompt: captureSettings.ollama.storeDebugIO ? "Review prompt failed." : "",
-                    rawResponse: captureSettings.ollama.storeDebugIO ? error.localizedDescription : ""
+                    message: error.localizedDescription,
+                    prompt: shouldStoreDebugIO(for: settings.reviewProvider, settings: settings) ? "Review prompt failed." : "",
+                    rawResponse: shouldStoreDebugIO(for: settings.reviewProvider, settings: settings) ? error.localizedDescription : ""
                 )
             }
         }
@@ -1037,11 +1239,13 @@ final class AppModel: ObservableObject {
     private func refreshReviewLearningMemory() async {
         let examples = store.validReviewFeedbackExamples(limit: 20)
         guard examples.count >= 3 else { return }
-        guard !captureSettings.ollama.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let settings = currentCaptureSettings()
+        guard reviewProviderSetupIssue(for: settings.reviewProvider) == nil else { return }
 
         do {
-            let memory = try await reviewProvider.summarizeLearningMemory(
-                configuration: captureSettings.ollama,
+            let provider = AIProviderBridge.provider(for: settings.reviewProvider)
+            let memory = try await provider.summarizeLearningMemory(
+                settings: settings,
                 personName: reviewDisplayName,
                 feedbackExamples: examples
             )
@@ -1215,10 +1419,12 @@ private extension AppModel {
             guard let self else { return }
 
             let generatedMessage: String
-            if !self.captureSettings.ollama.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let settings = self.currentCaptureSettings()
+            if self.reviewProviderSetupIssue(for: settings.reviewProvider) == nil {
                 do {
-                    generatedMessage = try await self.reviewProvider.generateFocusGuardNudge(
-                        configuration: self.captureSettings.ollama,
+                    let provider = AIProviderBridge.provider(for: settings.reviewProvider)
+                    generatedMessage = try await provider.generateFocusGuardNudge(
+                        settings: settings,
                         goal: session.title,
                         assessmentReason: promptReason,
                         driftLabels: assessment.driftLabels,
@@ -1247,6 +1453,39 @@ private extension AppModel {
                     await focusGuardNotifications.schedule(prompt: prompt)
                 }
             }
+        }
+    }
+
+    private func shouldStoreDebugIO(for provider: AIReviewProvider, settings: CaptureSettings) -> Bool {
+        switch provider {
+        case .ollama:
+            return settings.ollama.storeDebugIO
+        case .codex, .claude:
+            return settings.chatCLI.storeDebugIO
+        }
+    }
+
+    private func reviewProviderSetupIssue(for provider: AIReviewProvider) -> String? {
+        switch provider {
+        case .ollama:
+            let selected = ollamaModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return selected.isEmpty ? "No Ollama model is selected for review generation." : nil
+        case .codex:
+            if !codexCLIStatus.installed {
+                return "Codex CLI is not installed yet."
+            }
+            if !codexCLIStatus.authenticated {
+                return "Codex CLI is installed, but you still need to run `codex login`."
+            }
+            return nil
+        case .claude:
+            if !claudeCLIStatus.installed {
+                return "Claude Code is not installed yet."
+            }
+            if !claudeCLIStatus.authenticated {
+                return "Claude Code is installed, but you still need to run `claude auth login`."
+            }
+            return nil
         }
     }
 

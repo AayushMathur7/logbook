@@ -1,134 +1,113 @@
 # Driftly
 
-Driftly is a local-first macOS app for one question:
+**See where your focus went.**
 
-Did this work block become the thing I meant to do?
+Driftly is a Mac app that watches your work session, can quietly nudge you when you drift, and gives you a quick recap at the end.
 
-You set a goal, start a session, do your work, and Driftly reviews the block against what actually happened.
+You start a focus block with a clear plan and end it with a fuzzy memory. Most productivity tools tell you how long you worked, not whether you stayed on track. Driftly gives you a quick recap you can actually use before the next session.
 
-## Why Driftly Exists
+## Why Use It
 
-Most productivity tools measure motion.
+Most focus tools either track time or block distractions. Driftly is trying to answer a different question:
 
-Driftly measures alignment.
+**Did this block actually become the thing you meant to do?**
 
-It is built for people who do deep work in messy, real desktops and want a clearer answer than "you were active for 97 minutes."
+If focus clearly slips, Driftly can quietly nudge you while the session is still running.
 
-## How It Works
+Then the session ends with something more useful than “I think that went fine”:
 
-1. Write what you want this block to become.
-2. Start the session.
-3. Driftly captures lightweight local context while you work.
-4. End the session.
-5. Driftly turns the session into a short review.
+- what matched
+- where it drifted
+- what to do next
 
-## Quick Start
+## Use It Locally
 
-From the repo root on a Mac running macOS 13 or newer:
+Clone the repo, then from the repo root run:
 
 ```bash
 ./scripts/dev.sh
 ```
 
-Then:
+That builds `dist/Driftly.app` and opens it.
+
+## Use It In 30 Seconds
 
 1. Open Driftly.
-2. Grant Accessibility if you want better context.
-3. Start a session with a clear goal.
-4. End the session and read the review.
+2. Write one goal.
+3. Start the session.
+4. Pick your review provider in Settings: Ollama, Codex CLI, or Claude Code.
+5. Turn on Accessibility if you want better window and page titles.
+6. Read the recap when the session ends.
+
+There is nothing big to learn.
+
+If your review provider is not installed or signed in yet, Driftly still saves the session, but it will not generate a review.
+
+There is no fallback cloud review.
 
 ## What You Need
 
 - macOS 13 or newer
-- Accessibility if you want window and page titles instead of generic app-only activity
-- Ollama if you want AI review generation
-- shell integration if you want terminal commands captured
+- Accessibility permission for the best experience
+- Ollama, Codex CLI, or Claude Code if you want AI reviews
 
-Shell integration:
+Optional:
+
+- shell integration if you want terminal commands captured
 
 ```zsh
 source "/absolute/path/to/driftly/integrations/shell/driftly.zsh"
 ```
 
-Important:
+## Easy To Trust
 
-- Driftly reviews are Ollama-only.
-- If Ollama is not installed or no model is configured, Driftly still saves the session and timeline, but it does not generate a review.
-- There is no fallback review mode.
+- Easy to start: open the app, write one goal, and begin.
+- Easy to read: each session ends with a short recap, so you can understand it in seconds.
+- Easy to trust: Driftly is built for honest reflection, not noisy dashboards or fake scores.
 
-## What It Captures
+## Private And Local-First
+
+Session data stays on your Mac. Reviews run through your configured provider. Driftly is not recording your screen or logging every key you press.
 
 Depending on your settings, Driftly can capture:
 
 - app switches, launches, and quits
-- wake and sleep events
 - active window titles
 - browser page titles, domains, and URLs
 - Finder context
 - shell commands through the shell integration
-- file activity under watched roots
+- file activity under watched folders
 - clipboard previews
+- quiet drift signals during the block
 
-It does not capture:
+It does **not** capture:
 
 - screenshots
 - screen recordings
 - keystrokes
 - audio
 - camera or microphone input
-
-## Privacy
-
-Driftly is built to stay local.
-
-- session data stays on your Mac
-- the database lives at `~/Library/Application Support/Driftly/driftly.sqlite`
-- AI review generation runs locally through Ollama
+- your data leaving your Mac by default
 
 See [PRIVACY.md](/Users/aayush/ai-projects/driftly/PRIVACY.md:1) for the full privacy model.
 
-## Releasing Driftly
+## Dev
 
-This repo now includes a release path for building a real macOS app bundle and DMG.
-
-Build a release app:
+Run the app locally:
 
 ```bash
-./scripts/build-app-bundle.sh --configuration release
+./scripts/dev.sh
 ```
 
-Package a DMG:
-
-```bash
-./scripts/package-dmg.sh
-```
-
-For public distribution, the app should be signed, notarized, and shipped as a DMG. See [docs/release-macos.md](/Users/aayush/ai-projects/driftly/docs/release-macos.md:1).
-
-## Beta Download
-
-Beta builds should be shipped through GitHub Releases:
-
-- [See the latest releases](https://github.com/AayushMathur7/driftly/releases)
-
-If you share an unsigned beta DMG, macOS may ask the user to manually allow Driftly in Privacy & Security the first time they open it.
-
-## Validation
+Run checks:
 
 ```bash
 bash scripts/check.sh
 ```
 
-Or run:
-
-```bash
-make run
-```
-
-## Repo Guide
+## Docs
 
 - [docs/install.md](/Users/aayush/ai-projects/driftly/docs/install.md:1)
-- [docs/release-macos.md](/Users/aayush/ai-projects/driftly/docs/release-macos.md:1)
 - [docs/launch-checklist.md](/Users/aayush/ai-projects/driftly/docs/launch-checklist.md:1)
 - [AGENT.md](/Users/aayush/ai-projects/driftly/AGENT.md:1)
 - [LICENSE](/Users/aayush/ai-projects/driftly/LICENSE:1)

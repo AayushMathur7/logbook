@@ -483,13 +483,7 @@ struct ContentView: View {
         var result = softWrapReviewText(value)
 
         result = result.replacingOccurrences(
-            of: #"(?<![=\w])(\d{1,3}%)(?!\w)"#,
-            with: "==$1==",
-            options: .regularExpression
-        )
-
-        result = result.replacingOccurrences(
-            of: #"(?<![\w])(\d+\s*(?:minutes?|minute|mins?|min|seconds?|second|secs?|sec|s))(?![\w])"#,
+            of: #"(?<![=\w])(\d{1,3}%)(?![\w])"#,
             with: "==$1==",
             options: .regularExpression
         )
@@ -501,35 +495,16 @@ struct ContentView: View {
         )
 
         result = result.replacingOccurrences(
-            of: #""([^"\n]{4,80})""#,
-            with: "\"*$1*\"",
+            of: #"(?<![\w])(\d+\s*(?:minutes?|minute|mins?|min|hours?|hour|hrs?|hr|seconds?|second|secs?|sec|s))(?![\w])"#,
+            with: "==$1==",
             options: .regularExpression
         )
 
-        let labels = ReviewEntityRegistry.promptEntities()
-            .map(\.label)
-            .sorted { lhs, rhs in
-                if lhs.count == rhs.count {
-                    return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
-                }
-                return lhs.count > rhs.count
-            }
-
-        for label in labels {
-            let escaped = NSRegularExpression.escapedPattern(for: label)
-            let pattern: String
-            if label.lowercased() == "x" {
-                pattern = #"(?<![=\w])\#(escaped)(?![=\w])"#
-            } else {
-                pattern = #"(?<!==)(?<![\w])\#(escaped)(?![\w])(?!==)"#
-            }
-
-            result = result.replacingOccurrences(
-                of: pattern,
-                with: "==\(label)==",
-                options: [.regularExpression, .caseInsensitive]
-            )
-        }
+        result = result.replacingOccurrences(
+            of: #"(?<![\w])(\d+\s+switches?)(?![\w])"#,
+            with: "==$1==",
+            options: .regularExpression
+        )
 
         return result
     }
@@ -653,9 +628,9 @@ struct ContentView: View {
         case .pending:
             return "This session finished, but the review has not been saved yet."
         case .unavailable:
-            return "No local model was available for this session, so Driftly could not generate a review."
+            return "Driftly could not generate a review because the selected AI provider was not ready."
         case .failed:
-            return "The model did not return a usable review for this session. Retry it after checking your Ollama setup or model output."
+            return "The selected AI provider did not return a usable review for this session. Retry it after checking your provider setup or output."
         case .none, .ready:
             return nil
         }
@@ -1369,6 +1344,29 @@ private struct HistoryScrollContentFramePreferenceKey: PreferenceKey {
 }
 
 private struct SettingsSheet: View {
+    private struct ModelOption: Identifiable {
+        let label: String
+        let value: String
+        let detail: String?
+
+        var id: String { value.isEmpty ? label : value }
+    }
+
+    private let codexModelOptions: [ModelOption] = [
+        ModelOption(label: "GPT-5.4", value: "gpt-5.4", detail: "Recommended default. OpenAI’s flagship model for complex reasoning and coding."),
+        ModelOption(label: "GPT-5.4 mini", value: "gpt-5.4-mini", detail: "Lower-latency GPT-5.4 variant for coding and subagents."),
+        ModelOption(label: "GPT-5.4 nano", value: "gpt-5.4-nano", detail: "Cheapest GPT-5.4-class option for simple high-volume tasks."),
+        ModelOption(label: "codex-mini-latest", value: "codex-mini-latest", detail: "Fast reasoning model optimized specifically for Codex CLI."),
+    ]
+
+    private let claudeModelOptions: [ModelOption] = [
+        ModelOption(label: "Opus", value: "opus", detail: "Recommended default. Anthropic’s most capable model alias in Claude Code."),
+        ModelOption(label: "Sonnet", value: "sonnet", detail: "Latest Sonnet model, currently Sonnet 4."),
+        ModelOption(label: "Haiku", value: "haiku", detail: "Fast and efficient Haiku model for simple tasks."),
+        ModelOption(label: "Sonnet 1M", value: "sonnet[1m]", detail: "Latest Sonnet model with a 1M token context window."),
+        ModelOption(label: "Opus Plan", value: "opusplan", detail: "Uses Opus in plan mode, then Sonnet for execution."),
+    ]
+
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
@@ -1390,49 +1388,140 @@ private struct SettingsSheet: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        settingsSection("Local model") {
-                            Text("A local model is optional at first. If no model is ready, Driftly still saves the session, but AI review generation will not run.")
+                        settingsSection("AI review") {
+                            Text("Pick how Driftly writes reviews. Ollama stays local. Codex CLI and Claude Code use the account already signed in on this Mac.")
                                 .font(.system(size: 11))
                                 .foregroundStyle(DriftlyStyle.subtleText)
                                 .fixedSize(horizontal: false, vertical: true)
 
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("Model")
+                                Text("Provider")
                                     .font(.system(size: 12, weight: .medium))
-                                if model.availableOllamaModels.isEmpty {
-                                    settingsTextField(title: "Model name (optional)", text: $model.ollamaModelName)
-                                } else {
-                                    Menu {
-                                        ForEach(model.availableOllamaModels) { detectedModel in
-                                            Button(detectedModel.name) {
-                                                model.ollamaModelName = detectedModel.name
-                                            }
+                                Menu {
+                                    ForEach(AIReviewProvider.allCases, id: \.rawValue) { provider in
+                                        Button(provider.displayName) {
+                                            model.reviewProviderSelection = provider
+                                            Task { await model.refreshReviewProviderStatus() }
                                         }
-                                    } label: {
-                                        settingsMenuField(model.ollamaModelName)
                                     }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                } label: {
+                                    settingsMenuField(model.reviewProviderSelection.displayName)
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
 
-                            HStack(spacing: 8) {
-                                settingsTextField(title: "Base URL", text: $model.ollamaBaseURLInput)
-                                settingsTextField(title: "Timeout", text: $model.ollamaTimeoutInput)
-                                    .frame(width: 92)
-                            }
-
-                            HStack(spacing: 8) {
-                                settingsChromeButton("Refresh") {
-                                    Task { await model.refreshAvailableModels() }
+                            switch model.reviewProviderSelection {
+                            case .ollama:
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Model")
+                                        .font(.system(size: 12, weight: .medium))
+                                    if model.availableOllamaModels.isEmpty {
+                                        settingsTextField(title: "Model name (optional)", text: $model.ollamaModelName)
+                                    } else {
+                                        Menu {
+                                            ForEach(model.availableOllamaModels) { detectedModel in
+                                                Button(detectedModel.name) {
+                                                    model.ollamaModelName = detectedModel.name
+                                                }
+                                            }
+                                        } label: {
+                                            settingsMenuField(model.ollamaModelName)
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
                                 }
 
-                                settingsInlineToggle("Debug model I/O", isOn: $model.ollamaStoreDebugIO)
+                                HStack(spacing: 8) {
+                                    settingsTextField(title: "Base URL", text: $model.ollamaBaseURLInput)
+                                    settingsTextField(title: "Timeout", text: $model.ollamaTimeoutInput)
+                                        .frame(width: 92)
+                                }
+
+                                HStack(spacing: 8) {
+                                    settingsChromeButton("Refresh") {
+                                        Task { await model.refreshReviewProviderStatus() }
+                                    }
+
+                                    settingsInlineToggle("Debug model I/O", isOn: $model.ollamaStoreDebugIO)
+                                }
+                            case .codex:
+                                chatCLISetupOverview(
+                                    selectedTool: .codex,
+                                    selectedStatus: model.codexCLIStatus
+                                )
+
+                                VStack(alignment: .leading, spacing: 8) {
+                                    settingsModelDropdown(
+                                        title: "Model",
+                                        selection: $model.codexModelName,
+                                        options: codexModelOptions
+                                    )
+                                }
+
+                                HStack(spacing: 8) {
+                                    settingsTextField(title: "Timeout", text: $model.chatCLITimeoutInput)
+                                        .frame(width: 92)
+
+                                    Spacer(minLength: 0)
+
+                                    settingsChromeButton("Open guide") {
+                                        model.openChatCLIInstallGuide(for: .codex)
+                                    }
+
+                                    if !model.codexCLIStatus.authenticated {
+                                        settingsChromeButton("Sign in") {
+                                            model.openChatCLILogin(for: .codex)
+                                        }
+                                    }
+
+                                    settingsChromeButton("Refresh") {
+                                        Task { await model.refreshReviewProviderStatus() }
+                                    }
+                                }
+
+                                settingsInlineToggle("Debug model I/O", isOn: $model.chatCLIStoreDebugIO)
+                            case .claude:
+                                chatCLISetupOverview(
+                                    selectedTool: .claude,
+                                    selectedStatus: model.claudeCLIStatus
+                                )
+
+                                VStack(alignment: .leading, spacing: 8) {
+                                    settingsModelDropdown(
+                                        title: "Model",
+                                        selection: $model.claudeModelName,
+                                        options: claudeModelOptions
+                                    )
+                                }
+
+                                HStack(spacing: 8) {
+                                    settingsTextField(title: "Timeout", text: $model.chatCLITimeoutInput)
+                                        .frame(width: 92)
+
+                                    Spacer(minLength: 0)
+
+                                    settingsChromeButton("Open guide") {
+                                        model.openChatCLIInstallGuide(for: .claude)
+                                    }
+
+                                    if !model.claudeCLIStatus.authenticated {
+                                        settingsChromeButton("Sign in") {
+                                            model.openChatCLILogin(for: .claude)
+                                        }
+                                    }
+
+                                    settingsChromeButton("Refresh") {
+                                        Task { await model.refreshReviewProviderStatus() }
+                                    }
+                                }
+
+                                settingsInlineToggle("Debug model I/O", isOn: $model.chatCLIStoreDebugIO)
                             }
 
-                            if !model.ollamaStatusMessage.isEmpty {
+                            if !model.reviewProviderStatusMessage.isEmpty {
                                 settingsStatusMessage(
-                                    text: model.ollamaStatusMessage,
-                                    isError: model.ollamaStatusIsError
+                                    text: model.reviewProviderStatusMessage,
+                                    isError: model.reviewProviderStatusIsError
                                 )
                             }
                         }
@@ -1627,11 +1716,130 @@ private struct SettingsSheet: View {
         }
     }
 
+    private func chatCLISetupOverview(selectedTool: ChatCLITool, selectedStatus: ChatCLIStatus) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("You only need one CLI installed and signed in on this Mac.")
+                .font(.system(size: 11))
+                .foregroundStyle(DriftlyStyle.subtleText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(alignment: .top, spacing: 10) {
+                chatCLIStatusCard(
+                    tool: .codex,
+                    status: model.codexCLIStatus,
+                    isSelected: selectedTool == .codex
+                )
+                chatCLIStatusCard(
+                    tool: .claude,
+                    status: model.claudeCLIStatus,
+                    isSelected: selectedTool == .claude
+                )
+            }
+
+            Text(selectedStatus.authenticated
+                 ? "Signed-in CLI detected. Pick a preset model if you want, or leave it on the default."
+                 : "If the CLI is already installed, sign in once from Terminal, then hit Refresh here.")
+                .font(.system(size: 11))
+                .foregroundStyle(DriftlyStyle.subtleText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func chatCLIStatusCard(tool: ChatCLITool, status: ChatCLIStatus, isSelected: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 6) {
+                Text(tool.displayName)
+                    .font(.system(size: 12, weight: .medium))
+                if isSelected {
+                    Text("Selected")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(DriftlyStyle.accent)
+                }
+            }
+
+            Text(chatCLIStatusLabel(for: status))
+                .font(.system(size: 11))
+                .foregroundStyle(status.authenticated ? DriftlyStyle.subtleText : DriftlyStyle.warning)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                settingsChromeButton(status.installed ? "Guide" : "Install") {
+                    model.openChatCLIInstallGuide(for: tool)
+                }
+
+                if status.installed && !status.authenticated {
+                    settingsChromeButton("Sign in") {
+                        model.openChatCLILogin(for: tool)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(isSelected ? DriftlyStyle.badgeFill.opacity(0.9) : DriftlyStyle.inputFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(isSelected ? DriftlyStyle.badgeStroke : DriftlyStyle.cardStroke, lineWidth: 1)
+        )
+    }
+
+    private func chatCLIStatusLabel(for status: ChatCLIStatus) -> String {
+        if status.authenticated {
+            return "Installed and signed in"
+        }
+        if status.installed {
+            return "Installed, but not signed in"
+        }
+        return "Not installed yet"
+    }
+
     private func settingsStatusMessage(text: String, isError: Bool) -> some View {
         Text(text)
             .font(.system(size: 11))
             .foregroundStyle(isError ? DriftlyStyle.warning : DriftlyStyle.subtleText)
             .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func settingsModelDropdown(title: String, selection: Binding<String>, options: [ModelOption]) -> some View {
+        let selectedValue = selection.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedOption = options.first(where: { $0.value == selectedValue })
+
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+
+            Menu {
+                ForEach(options) { option in
+                    Button {
+                        selection.wrappedValue = option.value
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(option.label)
+                            if let detail = option.detail, !detail.isEmpty {
+                                Text(detail)
+                            }
+                        }
+                    }
+                }
+            } label: {
+                settingsMenuField(selectedOption?.label ?? (selectedValue.isEmpty ? "Default" : selectedValue))
+            }
+
+            if let detail = selectedOption?.detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(DriftlyStyle.subtleText)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if !selectedValue.isEmpty {
+                Text("Using custom model id: \(selectedValue)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(DriftlyStyle.subtleText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     private func settingsMenuField(_ value: String) -> some View {
