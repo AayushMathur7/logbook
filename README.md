@@ -37,7 +37,7 @@ That builds `dist/Driftly.app` and opens it.
 1. Open Driftly.
 2. Write one goal.
 3. Start the session.
-4. Pick your review provider in Settings: Ollama, Codex CLI, or Claude Code.
+4. Pick your review provider in Settings: Codex or Claude Code.
 5. Turn on Accessibility if you want better window and page titles.
 6. Read the recap when the session ends.
 
@@ -50,7 +50,7 @@ Reviews only run through the provider you configure in Settings.
 
 - macOS 13 or newer
 - Accessibility permission for the best experience
-- Ollama, Codex CLI, or Claude Code if you want AI reviews
+- Codex CLI or Claude Code if you want AI reviews
 
 Optional:
 
@@ -119,6 +119,7 @@ This repo only documents and supports the current Driftly paths and naming.
 - [driftly.sh](https://driftly.sh)
 - [docs/install.md](/Users/aayush/ai-projects/driftly/docs/install.md:1)
 - [docs/launch-checklist.md](/Users/aayush/ai-projects/driftly/docs/launch-checklist.md:1)
-- [AGENT.md](/Users/aayush/ai-projects/driftly/AGENT.md:1)
+- [AGENTS.md](/Users/aayush/ai-projects/driftly/AGENTS.md:1)
+- [CLAUDE.md](/Users/aayush/ai-projects/driftly/CLAUDE.md:1)
 - [LICENSE](/Users/aayush/ai-projects/driftly/LICENSE:1)
 - [SECURITY.md](/Users/aayush/ai-projects/driftly/SECURITY.md:1)

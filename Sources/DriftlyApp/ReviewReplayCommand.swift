@@ -30,12 +30,6 @@ enum ReviewReplayCommand {
         let settings = store.loadCaptureSettings()
         let provider = AIProviderBridge.provider(for: settings.reviewProvider)
 
-        if settings.reviewProvider == .ollama,
-           settings.ollama.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            fputs("No Ollama model is selected in Driftly settings.\n", stderr)
-            return 1
-        }
-
         let sessions = selectedSessions(from: store, options: options)
         guard !sessions.isEmpty else {
             fputs("No matching stored sessions were found.\n", stderr)
@@ -55,11 +49,16 @@ enum ReviewReplayCommand {
             printStoredReview(detail.review)
 
             do {
+                let insightWritingSkill = DriftlyInsightWritingSkill.build(
+                    store: store,
+                    excludingSessionID: detail.session.id
+                ) ?? DriftlyAgentContext.recentPatternsMarkdown(from: nil)
                 let run = try await provider.generateReview(
                     settings: settings,
                     title: detail.session.goal,
                     personName: nil,
                     contextPattern: store.contextPatternSnapshot(goal: detail.session.goal, excludingSessionID: detail.session.id),
+                    insightWritingSkill: insightWritingSkill,
                     reviewLearnings: store.reviewLearningMemory()?.learnings ?? [],
                     feedbackExamples: store.promptReadyReviewFeedbackExamples(),
                     startedAt: detail.session.startedAt,

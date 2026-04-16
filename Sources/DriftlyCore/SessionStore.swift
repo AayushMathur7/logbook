@@ -542,6 +542,180 @@ public final class SessionStore {
         return results
     }
 
+    public func sessions(overlapping startAt: Date, and endAt: Date, limit: Int = 500) -> [StoredSession] {
+        guard let db else { return [] }
+        var results: [StoredSession] = []
+        guard let statement = prepare(db, sql: """
+            SELECT id, goal, started_at, ended_at, verdict, headline, summary, review_status, primary_labels_json
+            FROM sessions
+            WHERE ended_at > ? AND started_at < ?
+            ORDER BY started_at DESC
+            LIMIT ?
+            """
+        ) else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, startAt.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 2, endAt.timeIntervalSince1970)
+        sqlite3_bind_int(statement, 3, Int32(limit))
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard
+                let id = string(from: statement, index: 0),
+                let goal = string(from: statement, index: 1),
+                let reviewStatusRaw = string(from: statement, index: 7),
+                let reviewStatus = ReviewStatus(rawValue: reviewStatusRaw),
+                let labelsJSON = string(from: statement, index: 8)
+            else {
+                reportStoreIssue("Skipping malformed ranged session row.")
+                continue
+            }
+            let startedAtValue = Date(timeIntervalSince1970: sqlite3_column_double(statement, 2))
+            let endedAtValue = Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
+            let verdict = string(from: statement, index: 4).flatMap(SessionVerdict.init(rawValue:))
+            let headline = string(from: statement, index: 5)
+            let summary = string(from: statement, index: 6)
+            let labels: [String]
+            do {
+                labels = try jsonDecoder.decode([String].self, from: Data(labelsJSON.utf8))
+            } catch {
+                reportStoreIssue("Skipping session \(id) due to malformed primary labels JSON: \(error.localizedDescription)")
+                continue
+            }
+            results.append(
+                StoredSession(
+                    id: id,
+                    goal: goal,
+                    startedAt: startedAtValue,
+                    endedAt: endedAtValue,
+                    verdict: verdict,
+                    headline: headline,
+                    summary: summary,
+                    reviewStatus: reviewStatus,
+                    primaryLabels: labels
+                )
+            )
+        }
+
+        return results
+    }
+
+    public func savePeriodicSummary(_ summary: StoredPeriodicSummary) throws {
+        guard let db else { throw SessionStoreError.unavailable }
+        try execute(
+            db,
+            sql: """
+            INSERT INTO periodic_summaries (
+                id, kind, period_start, period_end, generated_at, provider_title, title, summary, next_step
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(kind, period_start, period_end) DO UPDATE SET
+                id = excluded.id,
+                generated_at = excluded.generated_at,
+                provider_title = excluded.provider_title,
+                title = excluded.title,
+                summary = excluded.summary,
+                next_step = excluded.next_step
+            """,
+            bind: { statement in
+                sqlite3_bind_text(statement, 1, summary.id, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(statement, 2, summary.kind.rawValue, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_double(statement, 3, summary.periodStart.timeIntervalSince1970)
+                sqlite3_bind_double(statement, 4, summary.periodEnd.timeIntervalSince1970)
+                sqlite3_bind_double(statement, 5, summary.generatedAt.timeIntervalSince1970)
+                sqlite3_bind_text(statement, 6, summary.providerTitle, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(statement, 7, summary.title, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(statement, 8, summary.summary, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(statement, 9, summary.nextStep, -1, SQLITE_TRANSIENT)
+            }
+        )
+    }
+
+    public func latestPeriodicSummary(kind: StoredPeriodicSummaryKind) -> StoredPeriodicSummary? {
+        guard let db else { return nil }
+        guard
+            let row = queryRow(
+                db,
+                sql: """
+                SELECT id, kind, period_start, period_end, generated_at, provider_title, title, summary, next_step
+                FROM periodic_summaries
+                WHERE kind = ?
+                ORDER BY period_start DESC, generated_at DESC
+                LIMIT 1
+                """,
+                bind: { sqlite3_bind_text($0, 1, kind.rawValue, -1, SQLITE_TRANSIENT) }
+            ),
+            let id = row.string("id"),
+            let kindRaw = row.string("kind"),
+            let storedKind = StoredPeriodicSummaryKind(rawValue: kindRaw),
+            let periodStart = row.double("period_start"),
+            let periodEnd = row.double("period_end"),
+            let generatedAt = row.double("generated_at"),
+            let providerTitle = row.string("provider_title"),
+            let title = row.string("title"),
+            let summary = row.string("summary"),
+            let nextStep = row.string("next_step")
+        else {
+            return nil
+        }
+
+        return StoredPeriodicSummary(
+            id: id,
+            kind: storedKind,
+            periodStart: Date(timeIntervalSince1970: periodStart),
+            periodEnd: Date(timeIntervalSince1970: periodEnd),
+            generatedAt: Date(timeIntervalSince1970: generatedAt),
+            providerTitle: providerTitle,
+            title: title,
+            summary: summary,
+            nextStep: nextStep
+        )
+    }
+
+    public func periodicSummary(kind: StoredPeriodicSummaryKind, periodStart: Date, periodEnd: Date) -> StoredPeriodicSummary? {
+        guard let db else { return nil }
+        guard
+            let row = queryRow(
+                db,
+                sql: """
+                SELECT id, kind, period_start, period_end, generated_at, provider_title, title, summary, next_step
+                FROM periodic_summaries
+                WHERE kind = ? AND period_start = ? AND period_end = ?
+                LIMIT 1
+                """,
+                bind: { statement in
+                    sqlite3_bind_text(statement, 1, kind.rawValue, -1, SQLITE_TRANSIENT)
+                    sqlite3_bind_double(statement, 2, periodStart.timeIntervalSince1970)
+                    sqlite3_bind_double(statement, 3, periodEnd.timeIntervalSince1970)
+                }
+            ),
+            let id = row.string("id"),
+            let kindRaw = row.string("kind"),
+            let storedKind = StoredPeriodicSummaryKind(rawValue: kindRaw),
+            let storedPeriodStart = row.double("period_start"),
+            let storedPeriodEnd = row.double("period_end"),
+            let generatedAt = row.double("generated_at"),
+            let providerTitle = row.string("provider_title"),
+            let title = row.string("title"),
+            let summary = row.string("summary"),
+            let nextStep = row.string("next_step")
+        else {
+            return nil
+        }
+
+        return StoredPeriodicSummary(
+            id: id,
+            kind: storedKind,
+            periodStart: Date(timeIntervalSince1970: storedPeriodStart),
+            periodEnd: Date(timeIntervalSince1970: storedPeriodEnd),
+            generatedAt: Date(timeIntervalSince1970: generatedAt),
+            providerTitle: providerTitle,
+            title: title,
+            summary: summary,
+            nextStep: nextStep
+        )
+    }
+
     public func latestSessionDetail() -> StoredSessionDetail? {
         sessionHistory(limit: 1).first.flatMap { sessionDetail(id: $0.id) }
     }
@@ -991,6 +1165,23 @@ public final class SessionStore {
             """
             CREATE INDEX IF NOT EXISTS idx_session_context_transitions_session_id
             ON session_context_transitions(session_id)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS periodic_summaries (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                period_start REAL NOT NULL,
+                period_end REAL NOT NULL,
+                generated_at REAL NOT NULL,
+                provider_title TEXT NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                next_step TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_periodic_summaries_kind_period
+            ON periodic_summaries(kind, period_start, period_end)
             """,
         ]
 

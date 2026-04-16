@@ -39,7 +39,7 @@ The automated tests do not cover:
 - Finder AppleScript behavior
 - Accessibility permission behavior
 - FSEvents behavior
-- real Ollama connectivity and model behavior
+- real Codex or Claude Code connectivity and model behavior
 - SwiftUI session and history flows
 
 For manual verification, run:
@@ -51,7 +51,7 @@ swift run DriftlyApp
 Then verify:
 
 - a session can start and finish
-- a review can be generated with a configured local Ollama model
+- a review can be generated with a configured local provider
 - History stores completed timed sessions
 - review retry works from History
 - browser titles, URLs, Finder paths, and clipboard previews appear only when the relevant capture sources and permissions are enabled

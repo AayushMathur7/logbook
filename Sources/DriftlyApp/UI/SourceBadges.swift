@@ -13,6 +13,7 @@ enum SourceBadgeIcon: Hashable {
     case none
     case app(bundleID: String)
     case brandAsset(String)
+    case rasterAsset(String)
     case brandMonogram(String)
     case system(String)
 }
@@ -80,6 +81,17 @@ private struct SourceBadgeIconView: View {
             } else {
                 EmptyView()
             }
+        case let .rasterAsset(assetName):
+            if let logoURL = BrandLogoRegistry.rasterURL(for: assetName),
+               let image = NSImage(contentsOf: logoURL) {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 15, height: 15)
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            } else {
+                EmptyView()
+            }
         case let .brandMonogram(value):
             ZStack {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -110,10 +122,41 @@ private struct SourceBadgeIconView: View {
 }
 
 enum SourceBadgeFactory {
-    private static let brandAssetIcons: Set<String> = [
-        "chrome", "codex", "claude", "spotify", "slack", "linear", "figma", "vercel",
-        "github", "youtube", "gmail", "notion", "x", "discord", "supabase",
-        "raycast", "canva", "sentry", "stripe", "hugging-face", "netlify", "cloudflare",
+    private static let brandAssetIcons: [String: String] = [
+        "chrome": "chrome",
+        "codex": "codex",
+        "claude": "claude",
+        "openai": "openai",
+        "spotify": "spotify",
+        "slack": "slack",
+        "linear": "linear",
+        "figma": "figma",
+        "vercel": "vercel",
+        "github": "github",
+        "gitlab": "gitlab",
+        "youtube": "youtube",
+        "gmail": "gmail",
+        "gemini": "googlegemini",
+        "linkedin": "linkedin",
+        "notion": "notion",
+        "x": "x",
+        "discord": "discord",
+        "telegram": "telegram",
+        "zoom": "zoom",
+        "disneyplus": "disneyplus",
+        "resend": "resend",
+        "supabase": "supabase",
+        "raycast": "raycast",
+        "canva": "canva",
+        "sentry": "sentry",
+        "stripe": "stripe",
+        "hugging-face": "huggingface",
+        "netlify": "netlify",
+        "cloudflare": "cloudflare",
+    ]
+
+    private static let rasterAssetIcons: [String: String] = [
+        "clicky": "clicky",
     ]
 
     private static let appBundleIcons: [String: String] = [
@@ -148,20 +191,56 @@ enum SourceBadgeFactory {
     ]
 
     static func badges(for segments: [TimelineSegment]) -> [SourceBadgeModel] {
-        if let domain = segments.compactMap(\.domain).first(where: { !$0.isEmpty }) {
-            return [identity(for: domain)]
+        struct Aggregate {
+            var badge: SourceBadgeModel
+            var seconds: TimeInterval
         }
 
-        if let filePath = segments.compactMap(\.filePath).first(where: { !$0.isEmpty }),
-           let badge = fileBadge(for: filePath) {
-            return [badge]
+        var aggregates: [String: Aggregate] = [:]
+
+        for segment in segments {
+            let duration = max(segment.endAt.timeIntervalSince(segment.startAt), 1)
+            var candidates: [SourceBadgeModel] = []
+
+            if let domain = segment.domain?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !domain.isEmpty {
+                candidates.append(identity(for: domain))
+            }
+
+            if let filePath = segment.filePath?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !filePath.isEmpty,
+               let badge = fileBadge(for: filePath) {
+                candidates.append(badge)
+            }
+
+            let trimmedAppName = segment.appName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedAppName.isEmpty {
+                candidates.append(identity(for: trimmedAppName))
+            }
+
+            var seenCandidateKeys: Set<String> = []
+            for candidate in candidates where candidate.icon != .none {
+                let key = badgeKey(for: candidate)
+                guard seenCandidateKeys.insert(key).inserted else { continue }
+
+                if var current = aggregates[key] {
+                    current.seconds += duration
+                    aggregates[key] = current
+                } else {
+                    aggregates[key] = Aggregate(badge: candidate, seconds: duration)
+                }
+            }
         }
 
-        if let appName = segments.map(\.appName).first(where: { !$0.isEmpty }) {
-            return [identity(for: appName)]
-        }
-
-        return []
+        return aggregates.values
+            .sorted {
+                if $0.seconds == $1.seconds {
+                    return $0.badge.label.localizedCaseInsensitiveCompare($1.badge.label) == .orderedAscending
+                }
+                return $0.seconds > $1.seconds
+            }
+            .prefix(4)
+            .map(\.badge)
     }
 
     private static func identity(for label: String) -> SourceBadgeModel {
@@ -200,8 +279,11 @@ enum SourceBadgeFactory {
         if let bundleID = appBundleIcons[definition.referenceID] {
             return .app(bundleID: bundleID)
         }
-        if brandAssetIcons.contains(definition.referenceID) {
-            return .brandAsset(definition.referenceID)
+        if let assetName = brandAssetIcons[definition.referenceID] {
+            return .brandAsset(assetName)
+        }
+        if let assetName = rasterAssetIcons[definition.referenceID] {
+            return .rasterAsset(assetName)
         }
         if let systemName = systemIcons[definition.referenceID] {
             return .system(systemName)
@@ -230,12 +312,38 @@ enum SourceBadgeFactory {
 
         return nil
     }
+
+    private static func badgeKey(for badge: SourceBadgeModel) -> String {
+        let iconKey: String = switch badge.icon {
+        case .none:
+            "none"
+        case let .app(bundleID):
+            "app:\(bundleID)"
+        case let .brandAsset(assetName):
+            "brand:\(assetName)"
+        case let .rasterAsset(assetName):
+            "raster:\(assetName)"
+        case let .brandMonogram(value):
+            "monogram:\(value)"
+        case let .system(systemName):
+            "system:\(systemName)"
+        }
+
+        return "\(badge.label.lowercased())|\(iconKey)"
+    }
 }
 
 enum BrandLogoRegistry {
     static func url(for assetName: String) -> URL? {
         Bundle.module.url(forResource: assetName, withExtension: "svg")
             ?? Bundle.module.url(forResource: assetName, withExtension: "svg", subdirectory: "BrandLogos")
+    }
+
+    static func rasterURL(for assetName: String) -> URL? {
+        Bundle.module.url(forResource: assetName, withExtension: "png")
+            ?? Bundle.module.url(forResource: assetName, withExtension: "png", subdirectory: "BrandLogos")
+            ?? Bundle.module.url(forResource: assetName, withExtension: "ico")
+            ?? Bundle.module.url(forResource: assetName, withExtension: "ico", subdirectory: "BrandLogos")
     }
 }
 

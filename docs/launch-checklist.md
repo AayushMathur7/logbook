@@ -9,8 +9,8 @@ This is the shortest practical list of what still needs to be true before Driftl
 
 ## Onboarding
 
-- Add a first-run flow for Accessibility and Ollama setup.
-- Detect whether Ollama is installed and whether a model is selected.
+- Add a first-run flow for Accessibility and local CLI setup.
+- Detect whether Codex or Claude Code is installed and signed in.
 - Make the first successful session easy. Do not let users get lost in settings before they see value.
 
 ## Trust
@@ -38,7 +38,7 @@ This is the shortest practical list of what still needs to be true before Driftl
 
 - Test the first-run review experience on a clean machine.
 - Tune the prompt for broad goals and mixed sessions.
-- Make the no-model and review-failed states clear when Ollama is missing or weak.
+- Make the no-provider and review-failed states clear when the selected local CLI is missing or not signed in.
 
 ## Suggested next product hooks
 

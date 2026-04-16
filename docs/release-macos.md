@@ -118,6 +118,6 @@ Test the downloaded DMG on a clean Mac and verify:
 - first launch works
 - Accessibility onboarding is clear
 - session start and finish work
-- AI review works when Ollama is configured
-- the no-model state is understandable when Ollama is not configured
+- AI review works when Codex or Claude Code is configured
+- the no-provider state is understandable when the selected local CLI is not configured
 - shell integration instructions are correct

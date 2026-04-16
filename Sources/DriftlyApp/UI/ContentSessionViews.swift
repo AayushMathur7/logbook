@@ -67,7 +67,13 @@ extension ContentView {
                 }
 
                 if !model.localReviewConfigured {
-                    InlineMessage(text: model.localReviewSetupSummary, tint: DriftlyStyle.caution)
+                    InlineButtonMessage(
+                        actionTitle: "Set up local review",
+                        text: "so Driftly can write your recap after the block.",
+                        tint: DriftlyStyle.caution
+                    ) {
+                        model.requestSettingsSheet()
+                    }
                 }
 
                 if let accessibilitySummary = model.accessibilitySetupSummary {
@@ -89,18 +95,6 @@ extension ContentView {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!sessionGoalIsValid)
-
-                if !model.localReviewConfigured {
-                    Button {
-                        activeSheet = .settings
-                    } label: {
-                        Label("Set up local review", systemImage: "gearshape.fill")
-                            .font(.system(size: 12, weight: .medium))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                    }
-                    .buttonStyle(.bordered)
-                }
             }
         }
         .padding(.horizontal, 12)

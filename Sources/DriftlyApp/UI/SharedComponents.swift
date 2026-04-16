@@ -62,6 +62,30 @@ struct InlineActionMessage: View {
     }
 }
 
+struct InlineButtonMessage: View {
+    let actionTitle: String
+    let text: String
+    let tint: Color
+    let action: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            Button(action: action) {
+                Text(actionTitle)
+                    .underline()
+                    .foregroundStyle(tint)
+            }
+            .buttonStyle(.plain)
+
+            Text(" \(text)")
+                .font(.system(size: 12))
+                .foregroundStyle(DriftlyStyle.subtleText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.system(size: 12))
+    }
+}
+
 struct ComposerInputFieldStyle: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     let isFocused: Bool

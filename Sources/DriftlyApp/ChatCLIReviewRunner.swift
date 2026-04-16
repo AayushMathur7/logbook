@@ -41,6 +41,7 @@ struct ChatCLIStatus: Hashable {
 }
 
 struct ChatCLIRunResult {
+    let prompt: String
     let output: String
     let rawStdout: String
     let stderr: String
@@ -283,17 +284,20 @@ enum ChatCLIReviewRunner {
         prompt: String,
         schemaJSON: String,
         model: String?,
-        timeoutSeconds: Int
+        timeoutSeconds: Int,
+        insightWritingSkill: String? = nil
     ) throws -> ChatCLIRunResult {
         let status = detect(tool: tool)
         guard status.installed else { throw ChatCLIError.notInstalled(tool) }
         guard status.authenticated else { throw ChatCLIError.notAuthenticated(tool) }
 
         let timeout = max(timeoutSeconds, 10)
-        let workingDirectory = try ensureWorkingDirectory()
-        let scratchDirectory = workingDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let baseDirectory = try ensureWorkingDirectory()
+        let runtimeContext = try prepareRuntimeContext(tool: tool, insightWritingSkill: insightWritingSkill)
+        let scratchDirectory = baseDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: scratchDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: scratchDirectory) }
+        let effectivePrompt = promptWithSkillHint(prompt, includeSkillHint: insightWritingSkill?.nilIfBlank != nil)
 
         let schemaPath = scratchDirectory.appendingPathComponent("schema.json")
         try schemaJSON.write(to: schemaPath, atomically: true, encoding: .utf8)
@@ -302,19 +306,22 @@ enum ChatCLIReviewRunner {
         case .codex:
             let outputPath = scratchDirectory.appendingPathComponent("output.json")
             let command = codexCommand(
-                prompt: prompt,
+                prompt: effectivePrompt,
                 model: model,
                 timeoutSeconds: timeout,
                 schemaPath: schemaPath.path,
                 outputPath: outputPath.path,
-                workingDirectory: workingDirectory.path
+                workingDirectory: runtimeContext.workingDirectory.path
             )
             let result = LoginShellRunner.run(command, timeout: TimeInterval(timeout))
             if result.exitCode == -2 {
                 throw ChatCLIError.timedOut(tool, timeout)
             }
             if result.exitCode != 0 {
-                throw ChatCLIError.executionFailed(tool, result.stderr.nilIfBlank ?? result.stdout.nilIfBlank ?? "Unknown error")
+                throw ChatCLIError.executionFailed(
+                    tool,
+                    sanitizedUserVisibleMessage(result.stderr.nilIfBlank ?? result.stdout.nilIfBlank ?? "Unknown error")
+                )
             }
 
             let output = (try? String(contentsOf: outputPath, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -322,20 +329,23 @@ enum ChatCLIReviewRunner {
                 throw ChatCLIError.emptyResponse(tool)
             }
 
-            return ChatCLIRunResult(output: output, rawStdout: result.stdout, stderr: result.stderr)
+            return ChatCLIRunResult(prompt: prompt, output: output, rawStdout: result.stdout, stderr: result.stderr)
         case .claude:
             let command = claudeCommand(
-                prompt: prompt,
+                prompt: effectivePrompt,
                 model: model,
                 schemaJSON: schemaJSON,
-                workingDirectory: workingDirectory.path
+                workingDirectory: runtimeContext.workingDirectory.path
             )
             let result = LoginShellRunner.run(command, timeout: TimeInterval(timeout))
             if result.exitCode == -2 {
                 throw ChatCLIError.timedOut(tool, timeout)
             }
             if result.exitCode != 0 {
-                throw ChatCLIError.executionFailed(tool, result.stderr.nilIfBlank ?? result.stdout.nilIfBlank ?? "Unknown error")
+                throw ChatCLIError.executionFailed(
+                    tool,
+                    sanitizedUserVisibleMessage(result.stderr.nilIfBlank ?? result.stdout.nilIfBlank ?? "Unknown error")
+                )
             }
 
             let output = try parseClaudeStructuredOutput(from: result.stdout)
@@ -343,7 +353,7 @@ enum ChatCLIReviewRunner {
                 throw ChatCLIError.emptyResponse(tool)
             }
 
-            return ChatCLIRunResult(output: output, rawStdout: result.stdout, stderr: result.stderr)
+            return ChatCLIRunResult(prompt: prompt, output: output, rawStdout: result.stdout, stderr: result.stderr)
         }
     }
 
@@ -351,36 +361,41 @@ enum ChatCLIReviewRunner {
         tool: ChatCLITool,
         prompt: String,
         model: String?,
-        timeoutSeconds: Int
+        timeoutSeconds: Int,
+        insightWritingSkill: String? = nil
     ) throws -> ChatCLIRunResult {
         let status = detect(tool: tool)
         guard status.installed else { throw ChatCLIError.notInstalled(tool) }
         guard status.authenticated else { throw ChatCLIError.notAuthenticated(tool) }
 
         let timeout = max(timeoutSeconds, 10)
-        let workingDirectory = try ensureWorkingDirectory()
+        let baseDirectory = try ensureWorkingDirectory()
+        let runtimeContext = try prepareRuntimeContext(tool: tool, insightWritingSkill: insightWritingSkill)
+        let scratchDirectory = baseDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: scratchDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratchDirectory) }
+        let effectivePrompt = promptWithSkillHint(prompt, includeSkillHint: insightWritingSkill?.nilIfBlank != nil)
 
         switch tool {
         case .codex:
-            let scratchDirectory = workingDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(at: scratchDirectory, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: scratchDirectory) }
-
             let outputPath = scratchDirectory.appendingPathComponent("output.txt")
             let command = codexCommand(
-                prompt: prompt,
+                prompt: effectivePrompt,
                 model: model,
                 timeoutSeconds: timeout,
                 schemaPath: nil,
                 outputPath: outputPath.path,
-                workingDirectory: workingDirectory.path
+                workingDirectory: runtimeContext.workingDirectory.path
             )
             let result = LoginShellRunner.run(command, timeout: TimeInterval(timeout))
             if result.exitCode == -2 {
                 throw ChatCLIError.timedOut(tool, timeout)
             }
             if result.exitCode != 0 {
-                throw ChatCLIError.executionFailed(tool, result.stderr.nilIfBlank ?? result.stdout.nilIfBlank ?? "Unknown error")
+                throw ChatCLIError.executionFailed(
+                    tool,
+                    sanitizedUserVisibleMessage(result.stderr.nilIfBlank ?? result.stdout.nilIfBlank ?? "Unknown error")
+                )
             }
 
             let output = (try? String(contentsOf: outputPath, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -388,20 +403,23 @@ enum ChatCLIReviewRunner {
                 throw ChatCLIError.emptyResponse(tool)
             }
 
-            return ChatCLIRunResult(output: output, rawStdout: result.stdout, stderr: result.stderr)
+            return ChatCLIRunResult(prompt: prompt, output: output, rawStdout: result.stdout, stderr: result.stderr)
         case .claude:
             let command = claudeCommand(
-                prompt: prompt,
+                prompt: effectivePrompt,
                 model: model,
                 schemaJSON: nil,
-                workingDirectory: workingDirectory.path
+                workingDirectory: runtimeContext.workingDirectory.path
             )
             let result = LoginShellRunner.run(command, timeout: TimeInterval(timeout))
             if result.exitCode == -2 {
                 throw ChatCLIError.timedOut(tool, timeout)
             }
             if result.exitCode != 0 {
-                throw ChatCLIError.executionFailed(tool, result.stderr.nilIfBlank ?? result.stdout.nilIfBlank ?? "Unknown error")
+                throw ChatCLIError.executionFailed(
+                    tool,
+                    sanitizedUserVisibleMessage(result.stderr.nilIfBlank ?? result.stdout.nilIfBlank ?? "Unknown error")
+                )
             }
 
             let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -409,8 +427,122 @@ enum ChatCLIReviewRunner {
                 throw ChatCLIError.emptyResponse(tool)
             }
 
-            return ChatCLIRunResult(output: output, rawStdout: result.stdout, stderr: result.stderr)
+            return ChatCLIRunResult(prompt: prompt, output: output, rawStdout: result.stdout, stderr: result.stderr)
         }
+    }
+
+    private struct CLIRuntimeContext {
+        let workingDirectory: URL
+    }
+
+    private static func prepareRuntimeContext(
+        tool: ChatCLITool,
+        insightWritingSkill: String?
+    ) throws -> CLIRuntimeContext {
+        let baseDirectory = try ensureWorkingDirectory()
+        let directory = baseDirectory.appendingPathComponent(tool.rawValue, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try refreshProviderContext(in: directory, tool: tool, insightWritingSkill: insightWritingSkill)
+        return CLIRuntimeContext(workingDirectory: directory)
+    }
+
+    private static func refreshProviderContext(
+        in directory: URL,
+        tool: ChatCLITool,
+        insightWritingSkill: String?
+    ) throws {
+        switch tool {
+        case .codex:
+            let agentsPath = directory.appendingPathComponent("AGENTS.md")
+            try writeFileIfNeeded(DriftlyAgentContext.codexAgentsMarkdown(), to: agentsPath)
+
+            let skillDirectory = directory
+                .appendingPathComponent(".agents", isDirectory: true)
+                .appendingPathComponent("skills", isDirectory: true)
+                .appendingPathComponent(DriftlyAgentContext.skillName, isDirectory: true)
+            try FileManager.default.createDirectory(at: skillDirectory, withIntermediateDirectories: true)
+            try writeFileIfNeeded(DriftlyAgentContext.skillMarkdown(), to: skillDirectory.appendingPathComponent("SKILL.md"))
+            try writeFileIfNeeded(
+                DriftlyAgentContext.openAIMetadataYAML(),
+                to: skillDirectory
+                    .appendingPathComponent("agents", isDirectory: true)
+                    .appendingPathComponent("openai.yaml")
+            )
+            try writeFileIfNeeded(
+                DriftlyAgentContext.trackedEvidenceMarkdown(),
+                to: skillDirectory
+                    .appendingPathComponent("references", isDirectory: true)
+                    .appendingPathComponent("what-driftly-tracks.md")
+            )
+            try writeFileIfNeeded(
+                DriftlyAgentContext.outputStyleMarkdown(),
+                to: skillDirectory
+                    .appendingPathComponent("references", isDirectory: true)
+                    .appendingPathComponent("output-style.md")
+            )
+            try writeFileIfNeeded(
+                DriftlyAgentContext.recentPatternsMarkdown(from: insightWritingSkill),
+                to: skillDirectory
+                    .appendingPathComponent("references", isDirectory: true)
+                    .appendingPathComponent("recent-patterns.md")
+            )
+        case .claude:
+            let claudePath = directory.appendingPathComponent("CLAUDE.md")
+            try writeFileIfNeeded(DriftlyAgentContext.claudeMarkdown(), to: claudePath)
+
+            let skillDirectory = directory
+                .appendingPathComponent(".claude", isDirectory: true)
+                .appendingPathComponent("skills", isDirectory: true)
+                .appendingPathComponent(DriftlyAgentContext.skillName, isDirectory: true)
+            try FileManager.default.createDirectory(at: skillDirectory, withIntermediateDirectories: true)
+            try writeFileIfNeeded(DriftlyAgentContext.skillMarkdown(), to: skillDirectory.appendingPathComponent("SKILL.md"))
+            try writeFileIfNeeded(
+                DriftlyAgentContext.trackedEvidenceMarkdown(),
+                to: skillDirectory
+                    .appendingPathComponent("references", isDirectory: true)
+                    .appendingPathComponent("what-driftly-tracks.md")
+            )
+            try writeFileIfNeeded(
+                DriftlyAgentContext.outputStyleMarkdown(),
+                to: skillDirectory
+                    .appendingPathComponent("references", isDirectory: true)
+                    .appendingPathComponent("output-style.md")
+            )
+            try writeFileIfNeeded(
+                DriftlyAgentContext.recentPatternsMarkdown(from: insightWritingSkill),
+                to: skillDirectory
+                    .appendingPathComponent("references", isDirectory: true)
+                    .appendingPathComponent("recent-patterns.md")
+            )
+        }
+    }
+
+    private static func promptWithSkillHint(_ prompt: String, includeSkillHint: Bool) -> String {
+        guard includeSkillHint else { return prompt }
+        return "Use the driftly-insight-writing skill for this task.\n\n\(prompt)"
+    }
+
+    private static func sanitizedUserVisibleMessage(_ value: String) -> String {
+        let strippedLines = value
+            .components(separatedBy: .newlines)
+            .filter { line in
+                let lowered = line.lowercased()
+                return !lowered.contains("developers.openai.com/codex/skills")
+                    && !lowered.contains("https://developers.openai.com")
+                    && !lowered.contains("http://developers.openai.com")
+            }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return strippedLines.nilIfBlank ?? "Unknown error"
+    }
+
+    private static func writeFileIfNeeded(_ content: String, to path: URL) throws {
+        let directory = path.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let existing = try? String(contentsOf: path, encoding: .utf8)
+        guard existing != content else { return }
+        try content.write(to: path, atomically: true, encoding: .utf8)
     }
 
     private static func codexCommand(

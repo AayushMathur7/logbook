@@ -25,6 +25,16 @@ struct SettingsSheet: View {
         ModelOption(label: "Opus Plan", value: "opusplan", detail: "Uses Opus in plan mode, then Sonnet for execution."),
     ]
 
+    private let weekdayOptions: [(value: Int, label: String)] = [
+        (1, "Sunday"),
+        (2, "Monday"),
+        (3, "Tuesday"),
+        (4, "Wednesday"),
+        (5, "Thursday"),
+        (6, "Friday"),
+        (7, "Saturday"),
+    ]
+
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
@@ -47,7 +57,7 @@ struct SettingsSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
                         settingsSection("AI review") {
-                            Text("Pick how Driftly writes reviews. Ollama stays local. Codex CLI and Claude Code use the account already signed in on this Mac.")
+                            Text("Pick how Driftly writes reviews. Codex is the default. Claude Code is the other option.")
                                 .font(.system(size: 11))
                                 .foregroundStyle(DriftlyStyle.subtleText)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -56,7 +66,7 @@ struct SettingsSheet: View {
                                 Text("Provider")
                                     .font(.system(size: 12, weight: .medium))
                                 Menu {
-                                    ForEach(AIReviewProvider.allCases, id: \.rawValue) { provider in
+                                    ForEach(AIReviewProvider.visibleAppCases, id: \.rawValue) { provider in
                                         Button(provider.displayName) {
                                             model.reviewProviderSelection = provider
                                             Task { await model.refreshReviewProviderStatus() }
@@ -69,39 +79,6 @@ struct SettingsSheet: View {
                             }
 
                             switch model.reviewProviderSelection {
-                            case .ollama:
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("Model")
-                                        .font(.system(size: 12, weight: .medium))
-                                    if model.availableOllamaModels.isEmpty {
-                                        settingsTextField(title: "Model name (optional)", text: $model.ollamaModelName)
-                                    } else {
-                                        Menu {
-                                            ForEach(model.availableOllamaModels) { detectedModel in
-                                                Button(detectedModel.name) {
-                                                    model.ollamaModelName = detectedModel.name
-                                                }
-                                            }
-                                        } label: {
-                                            settingsMenuField(model.ollamaModelName)
-                                        }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                }
-
-                                HStack(spacing: 8) {
-                                    settingsTextField(title: "Base URL", text: $model.ollamaBaseURLInput)
-                                    settingsTextField(title: "Timeout", text: $model.ollamaTimeoutInput)
-                                        .frame(width: 92)
-                                }
-
-                                HStack(spacing: 8) {
-                                    settingsChromeButton("Refresh") {
-                                        Task { await model.refreshReviewProviderStatus() }
-                                    }
-
-                                    settingsInlineToggle("Debug model I/O", isOn: $model.ollamaStoreDebugIO)
-                                }
                             case .codex:
                                 chatCLISetupOverview(
                                     selectedTool: .codex,
@@ -257,6 +234,61 @@ struct SettingsSheet: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
 
+                        settingsSection("Summaries") {
+                            Text("Auto-write a short daily or weekly pattern summary from your saved sessions.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(DriftlyStyle.subtleText)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            summaryScheduleBlock(
+                                title: "Daily",
+                                detail: "Generate one daily summary after the time you pick.",
+                                isOn: $model.dailySummaryEnabled
+                            ) {
+                                HStack(spacing: 6) {
+                                    Text("Every day at")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(DriftlyStyle.subtleText)
+                                    summaryTimeMenu(selection: $model.dailySummaryTime)
+                                }
+                            }
+
+                            summaryScheduleBlock(
+                                title: "Weekly",
+                                detail: "Generate one weekly summary for the selected weekday and time.",
+                                isOn: $model.weeklySummaryEnabled
+                            ) {
+                                HStack(spacing: 8) {
+                                    Text("Every")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(DriftlyStyle.subtleText)
+                                    Menu {
+                                        ForEach(weekdayOptions, id: \.value) { option in
+                                            Button(option.label) {
+                                                model.weeklySummaryWeekday = option.value
+                                            }
+                                        }
+                                    } label: {
+                                        summarySelectionPill(
+                                            weekdayOptions.first(where: { $0.value == model.weeklySummaryWeekday })?.label ?? "Sunday"
+                                        )
+                                    }
+                                    .frame(width: 112)
+
+                                    Text("at")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(DriftlyStyle.subtleText)
+                                    summaryTimeMenu(selection: $model.weeklySummaryTime)
+                                }
+                            }
+
+                            summaryDetailRow(
+                                title: "Notify when ready",
+                                detail: "Send a notification after a daily or weekly summary is written.",
+                                isOn: $model.summaryNotifyWhenReady
+                            )
+                        }
+
                         settingsSection("Permissions") {
                             permissionRow(
                                 title: "Accessibility",
@@ -372,6 +404,66 @@ struct SettingsSheet: View {
             Spacer()
             settingsSwitch(isOn: isOn)
         }
+    }
+
+    private func summaryScheduleBlock<Controls: View>(
+        title: String,
+        detail: String,
+        isOn: Binding<Bool>,
+        @ViewBuilder controls: () -> Controls
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 12, weight: .medium))
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(DriftlyStyle.subtleText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                settingsSwitch(isOn: isOn)
+            }
+
+            if isOn.wrappedValue {
+                controls()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(DriftlyStyle.inputFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(DriftlyStyle.cardStroke, lineWidth: 1)
+        )
+    }
+
+    private func summaryDetailRow(title: String, detail: String, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(DriftlyStyle.subtleText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            settingsSwitch(isOn: isOn)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(DriftlyStyle.inputFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(DriftlyStyle.cardStroke, lineWidth: 1)
+        )
     }
 
     private func chatCLISetupOverview(selectedTool: ChatCLITool, selectedStatus: ChatCLIStatus) -> some View {
@@ -539,6 +631,42 @@ struct SettingsSheet: View {
             .buttonStyle(.plain)
     }
 
+    private func summaryTimeMenu(selection: Binding<Date>) -> some View {
+        Menu {
+            ForEach(summaryTimeOptions, id: \.self) { option in
+                Button(summaryTimeLabel(for: option)) {
+                    selection.wrappedValue = option
+                }
+            }
+        } label: {
+            summarySelectionPill(summaryTimeLabel(for: selection.wrappedValue))
+        }
+        .frame(width: 96)
+    }
+
+    private func summarySelectionPill(_ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(value)
+                .font(.system(size: 12))
+                .foregroundStyle(DriftlyStyle.text)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(DriftlyStyle.subtleText)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(DriftlyStyle.inputFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(DriftlyStyle.cardStroke, lineWidth: 1)
+        )
+    }
+
     private func settingsInlineToggle(_ title: String, isOn: Binding<Bool>) -> some View {
         Button {
             isOn.wrappedValue.toggle()
@@ -572,5 +700,18 @@ struct SettingsSheet: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    private var summaryTimeOptions: [Date] {
+        let calendar = Calendar.current
+        let base = calendar.startOfDay(for: Date())
+
+        return stride(from: 0, through: 23 * 60 + 50, by: 10).compactMap { minuteOffset in
+            calendar.date(byAdding: .minute, value: minuteOffset, to: base)
+        }
+    }
+
+    private func summaryTimeLabel(for date: Date) -> String {
+        ActivityFormatting.shortTime.string(from: date)
     }
 }

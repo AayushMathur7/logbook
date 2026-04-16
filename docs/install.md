@@ -18,12 +18,12 @@ From the repo root:
 
 - macOS 13 or newer
 - Accessibility permission if you want window titles and stronger context
-- Ollama, Codex CLI, or Claude Code if you want AI review
+- Codex CLI or Claude Code if you want AI review
 - shell integration if you want terminal commands captured
 
 ## Review generation
 
-Session review generation can run through Ollama, Codex CLI, or Claude Code.
+Session review generation can run through Codex CLI or Claude Code.
 
 If your selected AI provider is not installed, signed in, or configured, Driftly still saves the session and timeline, but it does not generate a review.
 

@@ -5,10 +5,10 @@ import SwiftUI
 extension ContentView {
     var previousSessionsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("History")
+            Text("Library")
                 .font(.system(size: 13, weight: .semibold))
 
-            if model.historySessions.isEmpty {
+            if model.historySessions.isEmpty, model.latestDailySummary == nil, model.latestWeeklySummary == nil {
                 Text("No saved sessions yet.")
                     .font(.system(size: 13))
                     .foregroundStyle(DriftlyStyle.subtleText)
@@ -16,16 +16,28 @@ extension ContentView {
                 HStack(alignment: .top, spacing: 16) {
                     FadingEdgeScrollView {
                         VStack(alignment: .leading, spacing: 8) {
-                            ForEach(model.historySessions) { session in
-                                Button {
-                                    model.selectHistorySession(session.id)
-                                } label: {
-                                    HistorySessionRow(
-                                        session: session,
-                                        isSelected: model.selectedHistoryDetail?.session.id == session.id
-                                    )
+                            Text("History")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(DriftlyStyle.subtleText)
+                                .padding(.bottom, 2)
+
+                            if model.historySessions.isEmpty {
+                                Text("No saved sessions yet.")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(DriftlyStyle.subtleText)
+                                    .padding(.top, 4)
+                            } else {
+                                ForEach(model.historySessions) { session in
+                                    Button {
+                                        model.selectHistorySession(session.id)
+                                    } label: {
+                                        HistorySessionRow(
+                                            session: session,
+                                            isSelected: model.selectedHistoryDetail?.session.id == session.id
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -36,7 +48,9 @@ extension ContentView {
                         .frame(maxHeight: 348)
 
                     Group {
-                        if let detail = model.selectedHistoryDetail {
+                        if let summary = model.selectedPeriodicSummary() {
+                            periodicSummaryDetail(summary)
+                        } else if let detail = model.selectedHistoryDetail {
                             if let review = detail.review?.review {
                                 reviewDetail(review: review, sessionID: detail.session.id, allowRetry: false, allowNextSession: false)
                             } else {
@@ -46,7 +60,7 @@ extension ContentView {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Select a session")
                                     .font(.system(size: 18, weight: .semibold))
-                                Text("Pick a saved block to review what happened.")
+                                Text("Pick a saved block on the left, or open a summary from the top bar.")
                                     .font(.system(size: 12))
                                     .foregroundStyle(DriftlyStyle.subtleText)
                             }
@@ -59,6 +73,45 @@ extension ContentView {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
+    }
+
+    func periodicSummaryDetail(_ summary: StoredPeriodicSummary) -> some View {
+        VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(summary.kind == .daily ? "Daily" : "Weekly")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(DriftlyStyle.subtleText)
+
+                    Spacer(minLength: 8)
+
+                    Text("Ran \(summaryGeneratedStamp(summary))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(DriftlyStyle.subtleText.opacity(0.78))
+                }
+
+                Text(summaryPeriodStamp(summary))
+                    .font(.system(size: 11))
+                    .foregroundStyle(DriftlyStyle.subtleText.opacity(0.9))
+            }
+
+            Text(summary.title)
+                .font(.system(size: 24, weight: .semibold, design: .serif))
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 16) {
+                Text(summary.summary)
+                    .font(.system(size: 13))
+                    .foregroundStyle(DriftlyStyle.subtleText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(summary.nextStep)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(DriftlyStyle.text)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 12)
     }
 
     func reviewDetail(review: SessionReview, sessionID: String?, allowRetry: Bool, allowNextSession: Bool) -> some View {
@@ -113,11 +166,12 @@ extension ContentView {
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 16) {
-                MarkdownText(
-                    emphasizedReviewMarkdown(review.summary),
+                RichReviewText(
+                    spans: review.summarySpans,
+                    fallbackMarkdown: emphasizedReviewMarkdown(review.summary),
                     font: .system(size: 13),
                     color: DriftlyStyle.subtleText,
-                    useAttributedLayout: true
+                    entityStyle: .plain
                 )
 
                 if let insight = review.focusAssessment?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -337,6 +391,33 @@ extension ContentView {
                 .stroke(DriftlyStyle.cardStroke, lineWidth: 1)
         )
     }
+}
+
+private let summaryRowDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "d MMM yyyy"
+    return formatter
+}()
+
+private func summaryPeriodStamp(_ summary: StoredPeriodicSummary) -> String {
+    let periodStart = summaryRowDateFormatter.string(from: summary.periodStart)
+    let periodEnd = summaryRowDateFormatter.string(from: summary.periodEnd)
+
+    if periodStart == periodEnd {
+        return periodStart
+    }
+
+    return "\(periodStart) to \(periodEnd)"
+}
+
+private let summaryGeneratedAtFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "d MMM yyyy, h:mm a"
+    return formatter
+}()
+
+private func summaryGeneratedStamp(_ summary: StoredPeriodicSummary) -> String {
+    summaryGeneratedAtFormatter.string(from: summary.generatedAt)
 }
 
 private struct HistoryIconButton: View {

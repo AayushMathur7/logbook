@@ -33,6 +33,7 @@ enum DriftlySelfTest {
             ("context graph stores session surfaces and transitions", testContextGraphStoresSessionSurfacesAndTransitions),
             ("context graph derives recent pattern snapshot", testContextGraphDerivesPriorPatternSnapshot),
             ("path noise filter drops macOS temp churn", testPathNoiseFilterDropsTempChurn),
+            ("path noise filter drops browser profile churn", testPathNoiseFilterDropsBrowserProfileChurn),
             ("focus guard waits five minutes before nudging", testFocusGuardWaitsBeforePrompting),
             ("focus guard stays quiet when idle or near session end", testFocusGuardSkipsIdleAndNearEnd),
             ("focus guard needs ninety seconds of continuous drift", testFocusGuardRequiresContinuousDrift),
@@ -829,6 +830,27 @@ enum DriftlySelfTest {
                 path: "/Users/aayush/ai-projects/driftly/Sources/DriftlyApp/AppModel.swift"
             ),
             "expected normal project files to remain visible"
+        )
+    }
+
+    static func testPathNoiseFilterDropsBrowserProfileChurn() throws {
+        try require(
+            PathNoiseFilter.shouldIgnoreFileActivity(
+                path: "/Users/aayush/Library/Application Support/Google/Chrome/Default/Extensions/abcdef/1.2.3_0/000003.log"
+            ),
+            "expected Chrome extension log churn to be ignored"
+        )
+        try require(
+            PathNoiseFilter.shouldIgnoreFileActivity(
+                path: "/Users/aayush/Library/Application Support/BraveSoftware/Brave-Browser/Default/Service Worker/ScriptCache/12ab34cd"
+            ),
+            "expected browser service worker cache churn to be ignored"
+        )
+        try require(
+            !PathNoiseFilter.shouldIgnoreFileActivity(
+                path: "/Users/aayush/ai-projects/driftly/logs/session-review.md"
+            ),
+            "expected ordinary project files outside browser profiles to remain visible"
         )
     }
 

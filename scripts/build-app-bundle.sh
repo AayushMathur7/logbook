@@ -146,5 +146,13 @@ PLIST
 
 chmod +x "${BINARY_DESTINATION}"
 
+# Give local builds a stable code identity even without a paid Apple signing cert.
+# This helps macOS treat the app more consistently for permissions like Accessibility.
+codesign \
+  --force \
+  --sign - \
+  --deep \
+  "${APP_BUNDLE}" >/dev/null 2>&1 || true
+
 echo "Built app bundle at:"
 echo "${APP_BUNDLE}"

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Driftly Insight Writing"
+  short_description: "Sharper Driftly review wording from recent local patterns and feedback."
+  default_prompt: "Use this skill when writing Driftly reviews or periodic summaries."
+
+policy:
+  allow_implicit_invocation: true

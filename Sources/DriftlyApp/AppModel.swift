@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import DriftlyCore
+import UserNotifications
 
 enum SessionScreenState: String, Equatable {
     case setup
@@ -69,15 +70,17 @@ final class AppModel: ObservableObject {
     @Published var redactedTitleBundleIDsInput = ""
     @Published var droppedShellDirectoryPrefixesInput = ""
     @Published var summaryOnlyDomainsInput = ""
-    @Published var reviewProviderSelection: AIReviewProvider = .ollama
-    @Published var ollamaBaseURLInput = "http://127.0.0.1:11434"
-    @Published var ollamaModelName = ""
-    @Published var ollamaTimeoutInput = "90"
-    @Published var ollamaStoreDebugIO = false
+    @Published var reviewProviderSelection: AIReviewProvider = .appDefault
     @Published var codexModelName = ""
     @Published var claudeModelName = ""
     @Published var chatCLITimeoutInput = "90"
     @Published var chatCLIStoreDebugIO = false
+    @Published var dailySummaryEnabled = false
+    @Published var dailySummaryTime = Date()
+    @Published var weeklySummaryEnabled = false
+    @Published var weeklySummaryWeekday = 1
+    @Published var weeklySummaryTime = Date()
+    @Published var summaryNotifyWhenReady = true
     @Published var rawEventRetentionDaysInput = "30"
     @Published var errorMessage: String?
     @Published private(set) var activeSession: FocusSession?
@@ -88,7 +91,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var lastReviewErrorMessage: String?
     @Published private(set) var surfaceState: SessionScreenState = .setup
     @Published private(set) var accessibilityTrustedState: Bool
-    @Published private(set) var availableOllamaModels: [OllamaModel] = []
     @Published private(set) var reviewProviderStatusMessage = ""
     @Published private(set) var reviewProviderStatusIsError = false
     @Published private(set) var codexCLIStatus = ChatCLIStatus(installed: false, authenticated: false, version: nil, message: "")
@@ -96,6 +98,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var activeSessionEventCount = 0
     @Published private(set) var historySessions: [StoredSession] = []
     @Published private(set) var selectedHistoryDetail: StoredSessionDetail?
+    @Published private(set) var selectedPeriodicSummaryKind: StoredPeriodicSummaryKind?
+    @Published private(set) var latestDailySummary: StoredPeriodicSummary?
+    @Published private(set) var latestWeeklySummary: StoredPeriodicSummary?
+    @Published private(set) var periodicSummaryInFlightKinds: Set<StoredPeriodicSummaryKind> = []
     @Published private(set) var reviewInFlightSessionID: String?
     @Published private(set) var latestSessionID: String?
     @Published var showPermissionOnboarding = true
@@ -135,14 +141,22 @@ final class AppModel: ObservableObject {
         self.droppedShellDirectoryPrefixesInput = Self.multilineList(from: captureSettings.droppedShellDirectoryPrefixes)
         self.summaryOnlyDomainsInput = Self.multilineList(from: captureSettings.summaryOnlyDomains)
         self.reviewProviderSelection = captureSettings.reviewProvider
-        self.ollamaBaseURLInput = captureSettings.ollama.baseURLString
-        self.ollamaModelName = captureSettings.ollama.modelName
-        self.ollamaTimeoutInput = String(captureSettings.ollama.timeoutSeconds)
-        self.ollamaStoreDebugIO = captureSettings.ollama.storeDebugIO
         self.codexModelName = captureSettings.chatCLI.resolvedCodexModelName
         self.claudeModelName = captureSettings.chatCLI.resolvedClaudeModelName
         self.chatCLITimeoutInput = String(captureSettings.chatCLI.timeoutSeconds)
         self.chatCLIStoreDebugIO = captureSettings.chatCLI.storeDebugIO
+        self.dailySummaryEnabled = captureSettings.summaryAutomation.dailyEnabled
+        self.dailySummaryTime = Self.timePickerDate(
+            hour: captureSettings.summaryAutomation.dailyHour,
+            minute: captureSettings.summaryAutomation.dailyMinute
+        )
+        self.weeklySummaryEnabled = captureSettings.summaryAutomation.weeklyEnabled
+        self.weeklySummaryWeekday = captureSettings.summaryAutomation.weeklyWeekday
+        self.weeklySummaryTime = Self.timePickerDate(
+            hour: captureSettings.summaryAutomation.weeklyHour,
+            minute: captureSettings.summaryAutomation.weeklyMinute
+        )
+        self.summaryNotifyWhenReady = captureSettings.summaryAutomation.notifyWhenReady
         self.rawEventRetentionDaysInput = String(captureSettings.rawEventRetentionDays)
         self.focusGuardNotifications.onAction = { [weak self] action, sessionID in
             Task { @MainActor [weak self] in
@@ -159,6 +173,7 @@ final class AppModel: ObservableObject {
             }
         }
         refreshHistory()
+        refreshPeriodicSummaries()
         hydrateLatestSession()
         if let startupError = store.startupError {
             assignErrorMessage(startupError)
@@ -168,6 +183,7 @@ final class AppModel: ObservableObject {
         start()
         Task { [weak self] in
             await self?.refreshReviewProviderStatus()
+            await self?.runPendingPeriodicSummariesIfNeeded()
         }
     }
 
@@ -210,16 +226,8 @@ final class AppModel: ObservableObject {
         return "Enable Accessibility to capture active window titles and improve session evidence."
     }
 
-    private var selectedOllamaModelName: String {
-        ollamaModelName.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     var localReviewConfigured: Bool {
         switch reviewProviderSelection {
-        case .ollama:
-            let selected = selectedOllamaModelName
-            guard !selected.isEmpty else { return false }
-            return availableOllamaModels.contains(where: { $0.name == selected })
         case .codex:
             return codexCLIStatus.installed && codexCLIStatus.authenticated
         case .claude:
@@ -262,28 +270,8 @@ final class AppModel: ObservableObject {
 
     var localReviewSetupSummary: String {
         switch reviewProviderSelection {
-        case .ollama:
-            let selected = selectedOllamaModelName
-
-            if localReviewConfigured {
-                return "Local AI review is ready with \(selected)."
-            }
-
-            if reviewProviderStatusIsError {
-                return "AI review is not ready yet."
-            }
-
-            if !selected.isEmpty {
-                return "The selected Ollama model is not installed locally."
-            }
-
-            if availableOllamaModels.isEmpty {
-                return "No Ollama model is ready for AI review yet."
-            }
-
-            return "Driftly found local Ollama models. Pick one in Settings for AI review."
         case .codex:
-            return codexCLIStatus.message.isEmpty ? "Codex CLI is not ready for AI review yet." : codexCLIStatus.message
+            return codexCLIStatus.message.isEmpty ? "Codex is not ready for AI review yet." : codexCLIStatus.message
         case .claude:
             return claudeCLIStatus.message.isEmpty ? "Claude Code is not ready for AI review yet." : claudeCLIStatus.message
         }
@@ -478,33 +466,11 @@ final class AppModel: ObservableObject {
         claudeCLIStatus = detectedClaude
 
         switch reviewProviderSelection {
-        case .ollama:
-            do {
-                let models = try await AIProviderBridge.ollama.availableModels(settings: currentCaptureSettings())
-                availableOllamaModels = models
-                reviewProviderStatusIsError = false
-
-                let selectedModel = selectedOllamaModelName
-                if models.isEmpty {
-                    reviewProviderStatusMessage = "Connected to Ollama, but no local models are installed yet."
-                } else if selectedModel.isEmpty {
-                    reviewProviderStatusMessage = "Connected to Ollama. Pick one of the \(models.count) detected models for AI review."
-                } else if models.contains(where: { $0.name == selectedModel }) {
-                    reviewProviderStatusMessage = "Connected to Ollama. Using \(selectedModel) for AI review."
-                } else {
-                    reviewProviderStatusMessage = "Connected to Ollama, but \(selectedModel) is not installed locally."
-                    reviewProviderStatusIsError = true
-                }
-            } catch {
-                availableOllamaModels = []
-                reviewProviderStatusMessage = "Couldn’t reach Ollama at \(currentOllamaConfiguration().baseURLString)."
-                reviewProviderStatusIsError = true
-            }
         case .codex:
             let configuredModel = currentChatCLIConfiguration().codexModelName.trimmingCharacters(in: .whitespacesAndNewlines)
             if detectedCodex.installed && detectedCodex.authenticated {
                 reviewProviderStatusMessage = configuredModel.isEmpty
-                    ? "Codex CLI is installed and signed in. Using its default model."
+                    ? "Codex is installed and signed in. Using its default model."
                     : "Codex CLI is installed and signed in. Using \(configuredModel)."
             } else {
                 reviewProviderStatusMessage = detectedCodex.message
@@ -643,9 +609,10 @@ final class AppModel: ObservableObject {
     }
 
     func saveCaptureSettings() {
-        let timeout = max(Int(ollamaTimeoutInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 90, 10)
         let retentionDays = max(Int(rawEventRetentionDaysInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 30, 1)
         let resolvedFocusPreset: FocusGuardPreset = focusGuardEnabled ? .balanced : .off
+        let dailyComponents = Self.hourMinute(from: dailySummaryTime)
+        let weeklyComponents = Self.hourMinute(from: weeklySummaryTime)
 
         captureSettings = CaptureSettings(
             focusGuardEnabled: resolvedFocusPreset != .off,
@@ -666,18 +633,22 @@ final class AppModel: ObservableObject {
             droppedShellDirectoryPrefixes: Self.parseMultilineList(droppedShellDirectoryPrefixesInput),
             summaryOnlyDomains: Self.parseMultilineList(summaryOnlyDomainsInput),
             rawEventRetentionDays: retentionDays,
-            reviewProvider: reviewProviderSelection,
-            ollama: OllamaConfiguration(
-                baseURLString: ollamaBaseURLInput.trimmingCharacters(in: .whitespacesAndNewlines),
-                modelName: ollamaModelName.trimmingCharacters(in: .whitespacesAndNewlines),
-                timeoutSeconds: timeout,
-                storeDebugIO: ollamaStoreDebugIO
-            ),
+            reviewProvider: normalizedReviewProviderSelection,
             chatCLI: ChatCLIConfiguration(
                 codexModelName: normalizedCodexModelName,
                 claudeModelName: normalizedClaudeModelName,
                 timeoutSeconds: max(Int(chatCLITimeoutInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 90, 10),
                 storeDebugIO: chatCLIStoreDebugIO
+            ),
+            summaryAutomation: SummaryAutomationSettings(
+                dailyEnabled: dailySummaryEnabled,
+                dailyHour: dailyComponents.hour,
+                dailyMinute: dailyComponents.minute,
+                weeklyEnabled: weeklySummaryEnabled,
+                weeklyWeekday: weeklySummaryWeekday,
+                weeklyHour: weeklyComponents.hour,
+                weeklyMinute: weeklyComponents.minute,
+                notifyWhenReady: summaryNotifyWhenReady
             )
         )
 
@@ -698,22 +669,14 @@ final class AppModel: ObservableObject {
         }
         Task { [weak self] in
             await self?.refreshReviewProviderStatus()
+            self?.refreshPeriodicSummaries()
+            await self?.runPendingPeriodicSummariesIfNeeded()
         }
     }
 
     func setNudgesEnabled(_ enabled: Bool) {
         focusGuardEnabled = enabled
         focusGuardPreset = enabled ? .balanced : .off
-    }
-
-    private func currentOllamaConfiguration() -> OllamaConfiguration {
-        let timeout = max(Int(ollamaTimeoutInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 90, 10)
-        return OllamaConfiguration(
-            baseURLString: ollamaBaseURLInput.trimmingCharacters(in: .whitespacesAndNewlines),
-            modelName: ollamaModelName.trimmingCharacters(in: .whitespacesAndNewlines),
-            timeoutSeconds: timeout,
-            storeDebugIO: ollamaStoreDebugIO
-        )
     }
 
     private func currentChatCLIConfiguration() -> ChatCLIConfiguration {
@@ -730,13 +693,20 @@ final class AppModel: ObservableObject {
         return trimmed.isEmpty ? ChatCLIConfiguration.preferredCodexModelName : trimmed
     }
 
+    private var normalizedReviewProviderSelection: AIReviewProvider {
+        reviewProviderSelection
+    }
+
     private var normalizedClaudeModelName: String {
         let trimmed = claudeModelName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? ChatCLIConfiguration.preferredClaudeModelName : trimmed
     }
 
     private func currentCaptureSettings() -> CaptureSettings {
-        CaptureSettings(
+        let dailyComponents = Self.hourMinute(from: dailySummaryTime)
+        let weeklyComponents = Self.hourMinute(from: weeklySummaryTime)
+
+        return CaptureSettings(
             focusGuardEnabled: captureSettings.focusGuardEnabled,
             focusGuardPreset: captureSettings.focusGuardPreset,
             trackAccessibilityTitles: captureSettings.trackAccessibilityTitles,
@@ -755,9 +725,18 @@ final class AppModel: ObservableObject {
             droppedShellDirectoryPrefixes: captureSettings.droppedShellDirectoryPrefixes,
             summaryOnlyDomains: captureSettings.summaryOnlyDomains,
             rawEventRetentionDays: captureSettings.rawEventRetentionDays,
-            reviewProvider: reviewProviderSelection,
-            ollama: currentOllamaConfiguration(),
-            chatCLI: currentChatCLIConfiguration()
+            reviewProvider: normalizedReviewProviderSelection,
+            chatCLI: currentChatCLIConfiguration(),
+            summaryAutomation: SummaryAutomationSettings(
+                dailyEnabled: dailySummaryEnabled,
+                dailyHour: dailyComponents.hour,
+                dailyMinute: dailyComponents.minute,
+                weeklyEnabled: weeklySummaryEnabled,
+                weeklyWeekday: weeklySummaryWeekday,
+                weeklyHour: weeklyComponents.hour,
+                weeklyMinute: weeklyComponents.minute,
+                notifyWhenReady: summaryNotifyWhenReady
+            )
         )
     }
 
@@ -778,10 +757,23 @@ final class AppModel: ObservableObject {
     }
 
     func selectHistorySession(_ id: String) {
+        selectedPeriodicSummaryKind = nil
         selectedHistoryDetail = store.sessionDetail(id: id)
     }
 
+    func selectPeriodicSummary(_ kind: StoredPeriodicSummaryKind) {
+        selectedPeriodicSummaryKind = kind
+        selectedHistoryDetail = nil
+    }
+
+    func selectHistoryLibrary() {
+        selectedPeriodicSummaryKind = nil
+        ensureHistorySelection()
+    }
+
     func ensureHistorySelection() {
+        guard selectedPeriodicSummaryKind == nil else { return }
+
         if let selected = selectedHistoryDetail?.session.id,
            historySessions.contains(where: { $0.id == selected }) {
             return
@@ -892,6 +884,8 @@ final class AppModel: ObservableObject {
                 self?.refreshPermissionStatuses()
                 self?.reconcilePermissionRefreshTimer()
                 await self?.refreshReviewProviderStatus()
+                self?.refreshPeriodicSummaries()
+                await self?.runPendingPeriodicSummariesIfNeeded()
             }
         }
         notificationObservers.append(observer)
@@ -1081,11 +1075,16 @@ final class AppModel: ObservableObject {
         Task {
             do {
                 let provider = AIProviderBridge.provider(for: settings.reviewProvider)
+                let insightWritingSkill = DriftlyInsightWritingSkill.build(
+                    store: store,
+                    excludingSessionID: context.sessionID
+                ) ?? DriftlyAgentContext.recentPatternsMarkdown(from: nil)
                 let run = try await provider.generateReview(
                     settings: settings,
                     title: context.title,
                     personName: reviewDisplayName,
                     contextPattern: store.contextPatternSnapshot(goal: context.title, excludingSessionID: context.sessionID),
+                    insightWritingSkill: insightWritingSkill,
                     reviewLearnings: store.reviewLearningMemory()?.learnings ?? [],
                     feedbackExamples: store.promptReadyReviewFeedbackExamples(),
                     startedAt: context.startedAt,
@@ -1199,9 +1198,13 @@ final class AppModel: ObservableObject {
         do {
             try store.saveSession(storedSession, review: storedReview, segments: review.segments, rawEventCount: rawEventCount)
             refreshHistory()
+            refreshPeriodicSummaries()
             hydrateLatestSession()
             lastReviewErrorMessage = reviewStatus == .ready ? nil : lastReviewErrorMessage
             errorMessage = nil
+            Task { [weak self] in
+                await self?.runPendingPeriodicSummariesIfNeeded()
+            }
         } catch {
             assignErrorMessage(error)
         }
@@ -1230,6 +1233,38 @@ final class AppModel: ObservableObject {
             }
         } else {
             ensureHistorySelection()
+        }
+    }
+
+    private func refreshPeriodicSummaries() {
+        latestDailySummary = store.latestPeriodicSummary(kind: .daily)
+        latestWeeklySummary = store.latestPeriodicSummary(kind: .weekly)
+
+        if let selectedPeriodicSummaryKind, selectedPeriodicSummary(for: selectedPeriodicSummaryKind) == nil {
+            self.selectedPeriodicSummaryKind = nil
+            ensureHistorySelection()
+        }
+
+        if selectedPeriodicSummaryKind == nil, selectedHistoryDetail == nil, historySessions.isEmpty {
+            if latestDailySummary != nil {
+                selectedPeriodicSummaryKind = .daily
+            } else if latestWeeklySummary != nil {
+                selectedPeriodicSummaryKind = .weekly
+            }
+        }
+    }
+
+    func selectedPeriodicSummary() -> StoredPeriodicSummary? {
+        guard let selectedPeriodicSummaryKind else { return nil }
+        return selectedPeriodicSummary(for: selectedPeriodicSummaryKind)
+    }
+
+    private func selectedPeriodicSummary(for kind: StoredPeriodicSummaryKind) -> StoredPeriodicSummary? {
+        switch kind {
+        case .daily:
+            return latestDailySummary
+        case .weekly:
+            return latestWeeklySummary
         }
     }
 
@@ -1389,6 +1424,153 @@ private extension AppModel {
         let segments: [TimelineSegment]
     }
 
+    struct PeriodicSummaryWindow {
+        let kind: StoredPeriodicSummaryKind
+        let periodStart: Date
+        let periodEnd: Date
+    }
+
+    static func timePickerDate(hour: Int, minute: Int) -> Date {
+        let calendar = Calendar.current
+        return calendar.date(
+            bySettingHour: max(0, min(23, hour)),
+            minute: max(0, min(59, minute)),
+            second: 0,
+            of: Date()
+        ) ?? Date()
+    }
+
+    static func hourMinute(from date: Date) -> (hour: Int, minute: Int) {
+        let components = Calendar.current.dateComponents([.hour, .minute], from: date)
+        return (components.hour ?? 21, components.minute ?? 0)
+    }
+
+    func runPendingPeriodicSummariesIfNeeded(now: Date = Date()) async {
+        guard activeSession == nil, reviewInFlightSessionID == nil else { return }
+
+        let settings = currentCaptureSettings()
+        guard reviewProviderSetupIssue(for: settings.reviewProvider) == nil else { return }
+
+        if let dailyWindow = pendingDailySummaryWindow(now: now, settings: settings.summaryAutomation) {
+            await generatePeriodicSummaryIfNeeded(for: dailyWindow, settings: settings)
+        }
+
+        if let weeklyWindow = pendingWeeklySummaryWindow(now: now, settings: settings.summaryAutomation) {
+            await generatePeriodicSummaryIfNeeded(for: weeklyWindow, settings: settings)
+        }
+    }
+
+    func pendingDailySummaryWindow(now: Date, settings: SummaryAutomationSettings) -> PeriodicSummaryWindow? {
+        guard settings.dailyEnabled else { return nil }
+
+        let calendar = Calendar.current
+        let periodStart = calendar.startOfDay(for: now)
+        guard let periodEnd = calendar.date(byAdding: .day, value: 1, to: periodStart),
+              let scheduledAt = calendar.date(
+                bySettingHour: settings.dailyHour,
+                minute: settings.dailyMinute,
+                second: 0,
+                of: periodStart
+              ),
+              now >= scheduledAt
+        else {
+            return nil
+        }
+
+        guard store.periodicSummary(kind: .daily, periodStart: periodStart, periodEnd: periodEnd) == nil else {
+            return nil
+        }
+
+        return PeriodicSummaryWindow(kind: .daily, periodStart: periodStart, periodEnd: periodEnd)
+    }
+
+    func pendingWeeklySummaryWindow(now: Date, settings: SummaryAutomationSettings) -> PeriodicSummaryWindow? {
+        guard settings.weeklyEnabled else { return nil }
+
+        let calendar = Calendar.current
+        guard let weekInterval = calendar.dateInterval(of: .weekOfYear, for: now) else {
+            return nil
+        }
+
+        var scheduledComponents = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)
+        scheduledComponents.weekday = max(1, min(7, settings.weeklyWeekday))
+        scheduledComponents.hour = settings.weeklyHour
+        scheduledComponents.minute = settings.weeklyMinute
+        scheduledComponents.second = 0
+
+        guard let scheduledAt = calendar.date(from: scheduledComponents), now >= scheduledAt else {
+            return nil
+        }
+
+        guard store.periodicSummary(kind: .weekly, periodStart: weekInterval.start, periodEnd: weekInterval.end) == nil else {
+            return nil
+        }
+
+        return PeriodicSummaryWindow(kind: .weekly, periodStart: weekInterval.start, periodEnd: weekInterval.end)
+    }
+
+    func generatePeriodicSummaryIfNeeded(for window: PeriodicSummaryWindow, settings: CaptureSettings) async {
+        guard !periodicSummaryInFlightKinds.contains(window.kind) else { return }
+        guard store.periodicSummary(kind: window.kind, periodStart: window.periodStart, periodEnd: window.periodEnd) == nil else { return }
+
+        let sessions = store.sessions(overlapping: window.periodStart, and: window.periodEnd)
+        guard !sessions.isEmpty else { return }
+
+        periodicSummaryInFlightKinds.insert(window.kind)
+        defer { periodicSummaryInFlightKinds.remove(window.kind) }
+
+        do {
+            let provider = AIProviderBridge.provider(for: settings.reviewProvider)
+            let insightWritingSkill = DriftlyInsightWritingSkill.build(store: store)
+                ?? DriftlyAgentContext.recentPatternsMarkdown(from: nil)
+            let summary = try await provider.generatePeriodicSummary(
+                settings: settings,
+                kind: window.kind,
+                periodStart: window.periodStart,
+                periodEnd: window.periodEnd,
+                insightWritingSkill: insightWritingSkill,
+                sessions: sessions
+            )
+            try store.savePeriodicSummary(summary)
+            refreshPeriodicSummaries()
+            await sendPeriodicSummaryNotificationIfNeeded(summary, enabled: settings.summaryAutomation.notifyWhenReady)
+        } catch {
+            ReviewDebugLogger.logReviewFailure(
+                sessionTitle: "\(window.kind.displayName) refresh",
+                error: error.localizedDescription
+            )
+        }
+    }
+
+    func sendPeriodicSummaryNotificationIfNeeded(_ summary: StoredPeriodicSummary, enabled: Bool) async {
+        guard enabled else { return }
+
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            break
+        default:
+            return
+        }
+
+        let content = UNMutableNotificationContent()
+        content.title = "\(summary.kind.displayName) ready"
+        content.body = "\(summary.title). \(summary.nextStep)"
+
+        let request = UNNotificationRequest(
+            identifier: "driftly-\(summary.kind.rawValue)-\(Int(summary.periodStart.timeIntervalSince1970))",
+            content: content,
+            trigger: nil
+        )
+
+        await withCheckedContinuation { continuation in
+            center.add(request) { _ in
+                continuation.resume()
+            }
+        }
+    }
+
     func evaluateFocusGuardIfNeeded(now: Date, session: FocusSession) {
         guard now >= (nextFocusGuardEvaluationAt ?? session.startedAt) else { return }
         nextFocusGuardEvaluationAt = now.addingTimeInterval(focusGuardEvaluationInterval)
@@ -1475,8 +1657,6 @@ private extension AppModel {
 
     private func shouldStoreDebugIO(for provider: AIReviewProvider, settings: CaptureSettings) -> Bool {
         switch provider {
-        case .ollama:
-            return settings.ollama.storeDebugIO
         case .codex, .claude:
             return settings.chatCLI.storeDebugIO
         }
@@ -1484,15 +1664,12 @@ private extension AppModel {
 
     private func reviewProviderSetupIssue(for provider: AIReviewProvider) -> String? {
         switch provider {
-        case .ollama:
-            let selected = ollamaModelName.trimmingCharacters(in: .whitespacesAndNewlines)
-            return selected.isEmpty ? "No Ollama model is selected for review generation." : nil
         case .codex:
             if !codexCLIStatus.installed {
-                return "Codex CLI is not installed yet."
+                return "Codex is not installed yet."
             }
             if !codexCLIStatus.authenticated {
-                return "Codex CLI is installed, but you still need to run `codex login`."
+                return "Codex is installed, but you still need to run `codex login`."
             }
             return nil
         case .claude:

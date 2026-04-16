@@ -732,6 +732,54 @@ public struct StoredSessionReview: Hashable, Codable {
     }
 }
 
+public enum StoredPeriodicSummaryKind: String, Hashable, Codable {
+    case daily
+    case weekly
+
+    public var displayName: String {
+        switch self {
+        case .daily:
+            return "Daily Summary"
+        case .weekly:
+            return "Weekly Summary"
+        }
+    }
+}
+
+public struct StoredPeriodicSummary: Identifiable, Hashable, Codable {
+    public let id: String
+    public let kind: StoredPeriodicSummaryKind
+    public let periodStart: Date
+    public let periodEnd: Date
+    public let generatedAt: Date
+    public let providerTitle: String
+    public let title: String
+    public let summary: String
+    public let nextStep: String
+
+    public init(
+        id: String = UUID().uuidString,
+        kind: StoredPeriodicSummaryKind,
+        periodStart: Date,
+        periodEnd: Date,
+        generatedAt: Date = Date(),
+        providerTitle: String,
+        title: String,
+        summary: String,
+        nextStep: String
+    ) {
+        self.id = id
+        self.kind = kind
+        self.periodStart = periodStart
+        self.periodEnd = periodEnd
+        self.generatedAt = generatedAt
+        self.providerTitle = providerTitle
+        self.title = title
+        self.summary = summary
+        self.nextStep = nextStep
+    }
+}
+
 public struct SessionReviewFeedback: Hashable, Codable {
     public let sessionID: String
     public let createdAt: Date

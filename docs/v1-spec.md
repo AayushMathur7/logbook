@@ -56,7 +56,7 @@ Contains:
 - capture toggles
 - Accessibility status
 - privacy and retention controls
-- Ollama model availability
+- local review provider setup
 
 ## Output Format
 
@@ -112,4 +112,4 @@ V1 is successful if:
 - AI reviews are only as good as the captured signals.
 - Browser detail is better than native-app detail.
 - Some app-specific metadata depends on AppleScript and can be flaky.
-- The current product depends on a working local Ollama setup instead of shipping its own model runtime.
+- The current product depends on a working local CLI review setup instead of shipping its own model runtime.

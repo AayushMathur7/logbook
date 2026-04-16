@@ -1,38 +1,30 @@
 import Foundation
 
 public enum AIReviewProvider: String, Codable, Hashable, CaseIterable {
-    case ollama
     case codex
     case claude
 
+    public static let appDefault: AIReviewProvider = .codex
+    public static let visibleAppCases: [AIReviewProvider] = [.codex, .claude]
+
     public var displayName: String {
         switch self {
-        case .ollama:
-            return "Ollama"
         case .codex:
-            return "Codex CLI"
+            return "Codex"
         case .claude:
             return "Claude Code"
         }
     }
-}
 
-public struct OllamaConfiguration: Codable, Hashable {
-    public var baseURLString: String
-    public var modelName: String
-    public var timeoutSeconds: Int
-    public var storeDebugIO: Bool
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = (try? container.decode(String.self))?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self = Self(rawValue: rawValue ?? "") ?? .appDefault
+    }
 
-    public init(
-        baseURLString: String = "http://127.0.0.1:11434",
-        modelName: String = "",
-        timeoutSeconds: Int = 90,
-        storeDebugIO: Bool = false
-    ) {
-        self.baseURLString = baseURLString
-        self.modelName = modelName
-        self.timeoutSeconds = timeoutSeconds
-        self.storeDebugIO = storeDebugIO
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 }
 
@@ -68,6 +60,37 @@ public struct ChatCLIConfiguration: Codable, Hashable {
     }
 }
 
+public struct SummaryAutomationSettings: Codable, Hashable {
+    public var dailyEnabled: Bool
+    public var dailyHour: Int
+    public var dailyMinute: Int
+    public var weeklyEnabled: Bool
+    public var weeklyWeekday: Int
+    public var weeklyHour: Int
+    public var weeklyMinute: Int
+    public var notifyWhenReady: Bool
+
+    public init(
+        dailyEnabled: Bool = false,
+        dailyHour: Int = 21,
+        dailyMinute: Int = 0,
+        weeklyEnabled: Bool = false,
+        weeklyWeekday: Int = 1,
+        weeklyHour: Int = 21,
+        weeklyMinute: Int = 0,
+        notifyWhenReady: Bool = true
+    ) {
+        self.dailyEnabled = dailyEnabled
+        self.dailyHour = max(0, min(23, dailyHour))
+        self.dailyMinute = max(0, min(59, dailyMinute))
+        self.weeklyEnabled = weeklyEnabled
+        self.weeklyWeekday = max(1, min(7, weeklyWeekday))
+        self.weeklyHour = max(0, min(23, weeklyHour))
+        self.weeklyMinute = max(0, min(59, weeklyMinute))
+        self.notifyWhenReady = notifyWhenReady
+    }
+}
+
 public struct CaptureSettings: Codable, Hashable {
     public var focusGuardEnabled: Bool
     public var focusGuardPreset: FocusGuardPreset
@@ -88,8 +111,8 @@ public struct CaptureSettings: Codable, Hashable {
     public var summaryOnlyDomains: [String]
     public var rawEventRetentionDays: Int
     public var reviewProvider: AIReviewProvider
-    public var ollama: OllamaConfiguration
     public var chatCLI: ChatCLIConfiguration
+    public var summaryAutomation: SummaryAutomationSettings
 
     public init(
         focusGuardEnabled: Bool = true,
@@ -110,9 +133,9 @@ public struct CaptureSettings: Codable, Hashable {
         droppedShellDirectoryPrefixes: [String] = [],
         summaryOnlyDomains: [String] = [],
         rawEventRetentionDays: Int = 30,
-        reviewProvider: AIReviewProvider = .ollama,
-        ollama: OllamaConfiguration = OllamaConfiguration(),
-        chatCLI: ChatCLIConfiguration = ChatCLIConfiguration()
+        reviewProvider: AIReviewProvider = .appDefault,
+        chatCLI: ChatCLIConfiguration = ChatCLIConfiguration(),
+        summaryAutomation: SummaryAutomationSettings = SummaryAutomationSettings()
     ) {
         let resolvedFocusGuardPreset = focusGuardPreset ?? (focusGuardEnabled ? .balanced : .off)
         self.focusGuardEnabled = resolvedFocusGuardPreset != .off
@@ -134,8 +157,8 @@ public struct CaptureSettings: Codable, Hashable {
         self.summaryOnlyDomains = summaryOnlyDomains
         self.rawEventRetentionDays = rawEventRetentionDays
         self.reviewProvider = reviewProvider
-        self.ollama = ollama
         self.chatCLI = chatCLI
+        self.summaryAutomation = summaryAutomation
     }
 
     public static let `default` = CaptureSettings()
@@ -159,8 +182,8 @@ public struct CaptureSettings: Codable, Hashable {
         case summaryOnlyDomains
         case rawEventRetentionDays
         case reviewProvider
-        case ollama
         case chatCLI
+        case summaryAutomation
     }
 
     public init(from decoder: Decoder) throws {
@@ -183,9 +206,9 @@ public struct CaptureSettings: Codable, Hashable {
         droppedShellDirectoryPrefixes = try container.decodeIfPresent([String].self, forKey: .droppedShellDirectoryPrefixes) ?? []
         summaryOnlyDomains = try container.decodeIfPresent([String].self, forKey: .summaryOnlyDomains) ?? []
         rawEventRetentionDays = try container.decodeIfPresent(Int.self, forKey: .rawEventRetentionDays) ?? 30
-        reviewProvider = try container.decodeIfPresent(AIReviewProvider.self, forKey: .reviewProvider) ?? .ollama
-        ollama = try container.decodeIfPresent(OllamaConfiguration.self, forKey: .ollama) ?? OllamaConfiguration()
+        reviewProvider = try container.decodeIfPresent(AIReviewProvider.self, forKey: .reviewProvider) ?? .appDefault
         chatCLI = try container.decodeIfPresent(ChatCLIConfiguration.self, forKey: .chatCLI) ?? ChatCLIConfiguration()
+        summaryAutomation = try container.decodeIfPresent(SummaryAutomationSettings.self, forKey: .summaryAutomation) ?? SummaryAutomationSettings()
     }
 }
 public enum PrivacyFilter {

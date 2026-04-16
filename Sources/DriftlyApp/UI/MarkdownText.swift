@@ -69,6 +69,12 @@ struct MarkdownText: View {
         var attributed = (try? AttributedString(markdown: value, options: options)) ?? AttributedString(value)
 
         for run in attributed.runs {
+            if run.link != nil {
+                attributed[run.range].foregroundColor = subtleLinkColor
+                attributed[run.range].underlineStyle = .single
+                continue
+            }
+
             guard let intent = run.inlinePresentationIntent else { continue }
             if intent.contains(.code) {
                 let token = String(attributed[run.range].characters)
@@ -84,6 +90,10 @@ struct MarkdownText: View {
         }
 
         return attributed
+    }
+
+    private var subtleLinkColor: Color {
+        DriftlyStyle.subtleText.opacity(0.94)
     }
 }
 
@@ -174,7 +184,10 @@ struct RichReviewText: View {
         let rawTokens = spans.flatMap { span in
             flowTokens(for: span)
         }
-        return mergedEntityLeadTokens(rawTokens)
+        if entityStyle == .plain {
+            return mergedTrailingPunctuationTokens(rawTokens)
+        }
+        return mergedTrailingPunctuationTokens(mergedEntityLeadTokens(rawTokens))
     }
 
     private func flowTokens(for span: SessionReviewInlineSpan) -> [RichReviewFlowToken] {
@@ -186,7 +199,10 @@ struct RichReviewText: View {
         case .link:
             return [.link(span.text, url: span.url ?? "")]
         case .title:
-            return [.emphasis(span.text, url: span.url)]
+            if let url = span.url, !url.isEmpty {
+                return [.link(span.text, url: url)]
+            }
+            return [.strong(span.text)]
         case .goal:
             return flowTokens(fromMarkdown: "**\(span.text)**")
         case .code, .file:
@@ -230,18 +246,18 @@ private struct InlineTokenView: View {
             Text(verbatim: value)
                 .font(font)
                 .foregroundStyle(color)
-                .fixedSize()
+                .fixedSize(horizontal: false, vertical: true)
         case let .strong(value):
             Text(verbatim: value)
                 .font(font)
                 .foregroundStyle(DriftlyStyle.text)
-                .fixedSize()
+                .fixedSize(horizontal: false, vertical: true)
         case let .emphasis(value):
             Text(verbatim: value)
                 .font(font)
                 .italic()
                 .foregroundStyle(InlineSemanticColor.color(for: value).opacity(0.92))
-                .fixedSize()
+                .fixedSize(horizontal: false, vertical: true)
         case let .code(value):
             Text(value)
                 .font(DriftlyStyle.codeFont(size: codePointSize, weight: .medium))
@@ -261,7 +277,7 @@ private struct InlineTokenView: View {
             Text(value)
                 .font(font)
                 .foregroundStyle(DriftlyStyle.text)
-                .fixedSize()
+                .fixedSize(horizontal: false, vertical: true)
         case let .link(text, urlString):
             if let url = URL(string: urlString) {
                 Button {
@@ -269,9 +285,9 @@ private struct InlineTokenView: View {
                 } label: {
                     Text(verbatim: text)
                         .font(font)
-                        .foregroundStyle(DriftlyStyle.badgeBlueText)
+                        .foregroundStyle(DriftlyStyle.subtleText.opacity(0.94))
                         .underline()
-                        .fixedSize()
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .buttonStyle(.plain)
                 .help(urlString)
@@ -279,7 +295,7 @@ private struct InlineTokenView: View {
                 Text(verbatim: text)
                     .font(font)
                     .foregroundStyle(color)
-                    .fixedSize()
+                    .fixedSize(horizontal: false, vertical: true)
             }
         case let .badge(badge):
             SourceBadge(badge: badge)
@@ -362,8 +378,8 @@ private struct RichReviewTokenView: View {
                 value,
                 urlString: url,
                 font: font,
-                color: DriftlyStyle.badgeBlueText.opacity(0.9),
-                underline: false
+                color: DriftlyStyle.subtleText.opacity(0.94),
+                underline: true
             )
         }
     }
@@ -372,8 +388,7 @@ private struct RichReviewTokenView: View {
         Text(verbatim: value)
             .font(font)
             .foregroundStyle(color)
-            .padding(.leading, leadingSpacingAdjustment(for: value))
-            .fixedSize()
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder
@@ -390,8 +405,7 @@ private struct RichReviewTokenView: View {
             .foregroundStyle(color)
             .underline(underline && urlString != nil)
             .italic(italic)
-            .padding(.leading, leadingSpacingAdjustment(for: value))
-            .fixedSize()
+            .fixedSize(horizontal: false, vertical: true)
 
         if let urlString, let url = URL(string: urlString) {
             Button {
@@ -453,11 +467,6 @@ private struct RichReviewTokenView: View {
         } else {
             codeView
         }
-    }
-
-    private func leadingSpacingAdjustment(for value: String) -> CGFloat {
-        guard let first = value.first else { return 0 }
-        return ",.;:!?)]".contains(first) ? -4 : 0
     }
 }
 
@@ -529,6 +538,15 @@ private struct InlineEntityChipIcon: View {
                 SVGView(contentsOf: logoURL)
                     .frame(width: assetName == "x" ? 10 : 11, height: assetName == "x" ? 10 : 11)
             }
+        case let .rasterAsset(assetName):
+            if let logoURL = BrandLogoRegistry.rasterURL(for: assetName),
+               let image = NSImage(contentsOf: logoURL) {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 11, height: 11)
+                    .clipShape(RoundedRectangle(cornerRadius: 2.5, style: .continuous))
+            }
         case let .brandMonogram(value):
             ZStack {
                 RoundedRectangle(cornerRadius: 2.5, style: .continuous)
@@ -580,7 +598,16 @@ private struct InlineWrapLayout: Layout {
         var usedWidth: CGFloat = 0
 
         for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
+            let idealSize = subview.sizeThatFits(.unspecified)
+            let size: CGSize
+
+            if idealSize.width > maxWidth {
+                size = subview.sizeThatFits(
+                    ProposedViewSize(width: maxWidth, height: nil)
+                )
+            } else {
+                size = idealSize
+            }
 
             if origin.x > bounds.minX, origin.x + size.width > bounds.minX + maxWidth {
                 origin.x = bounds.minX
@@ -650,6 +677,26 @@ private func mergedEntityLeadTokens(_ tokens: [RichReviewFlowToken]) -> [RichRev
     return result
 }
 
+private func mergedTrailingPunctuationTokens(_ tokens: [RichReviewFlowToken]) -> [RichReviewFlowToken] {
+    var result: [RichReviewFlowToken] = []
+
+    for token in tokens {
+        guard case let .text(value) = token,
+              let split = splitLeadingPunctuation(in: value),
+              let previous = result.popLast() else {
+            result.append(token)
+            continue
+        }
+
+        result.append(appendingReviewSuffix(split.punctuation, to: previous))
+        if !split.remainder.isEmpty {
+            result.append(.text(split.remainder))
+        }
+    }
+
+    return result
+}
+
 private func splitTrailingEntityLead(in text: String) -> (prefix: String, lead: String)? {
     let pattern = #"(.*?)(\s+(?:and|or|via|on|in)\s*)$"#
     guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
@@ -668,6 +715,39 @@ private func splitTrailingEntityLead(in text: String) -> (prefix: String, lead: 
     let lead = String(text[leadRange]).trimmingCharacters(in: .whitespacesAndNewlines)
     guard !lead.isEmpty else { return nil }
     return (prefix, lead)
+}
+
+private func splitLeadingPunctuation(in text: String) -> (punctuation: String, remainder: String)? {
+    let punctuationCharacters = CharacterSet(charactersIn: ",.;:!?)]}\"”’")
+    var cursor = text.startIndex
+
+    while cursor < text.endIndex,
+          let scalar = text[cursor].unicodeScalars.first,
+          punctuationCharacters.contains(scalar) {
+        cursor = text.index(after: cursor)
+    }
+
+    guard cursor > text.startIndex else { return nil }
+    return (String(text[..<cursor]), String(text[cursor...]))
+}
+
+private func appendingReviewSuffix(_ suffix: String, to token: RichReviewFlowToken) -> RichReviewFlowToken {
+    switch token {
+    case let .text(value):
+        .text(value + suffix)
+    case let .strong(value):
+        .strong(value + suffix)
+    case let .emphasis(value, url):
+        .emphasis(value + suffix, url: url)
+    case let .code(value, url):
+        .code(value + suffix, url: url)
+    case let .link(value, url):
+        .link(value + suffix, url: url)
+    case let .entity(text, badge, url):
+        .entity(text: text + suffix, badge: badge, url: url)
+    case let .entityLead(text, badge, url):
+        .entityLead(text: text, badge: badge.map { SourceBadgeModel(label: $0.label + suffix, icon: $0.icon) }, url: url)
+    }
 }
 
 private struct InlineToken: Identifiable {
@@ -732,6 +812,12 @@ private enum MarkdownInlineParser {
         }
 
         if !inferBadges {
+            if case .text = segment.kind,
+               !segment.text.isEmpty,
+               trimmed.isEmpty {
+                return [InlineToken(kind: .text(segment.text))]
+            }
+
             let chunks = preservedInlineChunks(from: segment.text)
 
             switch segment.kind {
@@ -808,7 +894,8 @@ private enum MarkdownInlineParser {
     }
 
     private static func cleanedBadgeCandidate(_ value: String) -> String {
-        value.trimmingCharacters(in: CharacterSet.alphanumerics.inverted.union(.whitespacesAndNewlines))
+        let allowedBadgeCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".+-_"))
+        return value.trimmingCharacters(in: allowedBadgeCharacters.inverted.union(.whitespacesAndNewlines))
     }
 
     private static func preservedInlineChunks(from value: String) -> [String] {
