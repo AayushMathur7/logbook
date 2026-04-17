@@ -672,6 +672,55 @@ public final class SessionStore {
         )
     }
 
+    public func periodicSummaryHistory(kind: StoredPeriodicSummaryKind, limit: Int = 24) -> [StoredPeriodicSummary] {
+        guard let db, limit > 0 else { return [] }
+        guard let statement = prepare(db, sql: """
+            SELECT id, kind, period_start, period_end, generated_at, provider_title, title, summary, next_step
+            FROM periodic_summaries
+            WHERE kind = ?
+            ORDER BY period_start DESC, generated_at DESC
+            LIMIT ?
+            """) else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_text(statement, 1, kind.rawValue, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int(statement, 2, Int32(limit))
+
+        var summaries: [StoredPeriodicSummary] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard
+                let id = string(from: statement, index: 0),
+                let kindRaw = string(from: statement, index: 1),
+                let storedKind = StoredPeriodicSummaryKind(rawValue: kindRaw),
+                let providerTitle = string(from: statement, index: 5),
+                let title = string(from: statement, index: 6),
+                let summary = string(from: statement, index: 7),
+                let nextStep = string(from: statement, index: 8)
+            else {
+                reportStoreIssue("Skipping malformed periodic summary row.")
+                continue
+            }
+
+            summaries.append(
+                StoredPeriodicSummary(
+                    id: id,
+                    kind: storedKind,
+                    periodStart: Date(timeIntervalSince1970: sqlite3_column_double(statement, 2)),
+                    periodEnd: Date(timeIntervalSince1970: sqlite3_column_double(statement, 3)),
+                    generatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 4)),
+                    providerTitle: providerTitle,
+                    title: title,
+                    summary: summary,
+                    nextStep: nextStep
+                )
+            )
+        }
+
+        return summaries
+    }
+
     public func periodicSummary(kind: StoredPeriodicSummaryKind, periodStart: Date, periodEnd: Date) -> StoredPeriodicSummary? {
         guard let db else { return nil }
         guard

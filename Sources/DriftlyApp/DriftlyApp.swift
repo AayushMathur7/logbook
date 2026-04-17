@@ -228,6 +228,10 @@ final class DriftlyAppController: NSObject, NSApplicationDelegate {
 package enum DriftlyAppLauncher {
     @MainActor
     package static func run() {
+        if PatternReplayCommand.shouldRun(arguments: CommandLine.arguments) {
+            PatternReplayCommand.runAndExit(arguments: Array(CommandLine.arguments.dropFirst()))
+        }
+
         if ReviewReplayCommand.shouldRun(arguments: CommandLine.arguments) {
             ReviewReplayCommand.runAndExit(arguments: Array(CommandLine.arguments.dropFirst()))
         }

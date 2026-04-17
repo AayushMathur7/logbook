@@ -2,6 +2,7 @@ import Foundation
 
 enum DriftlyAgentContext {
     static let skillName = "driftly-insight-writing"
+    static let patternSkillName = "driftly-pattern-writing"
 
     static func codexAgentsMarkdown() -> String {
         """
@@ -14,7 +15,8 @@ enum DriftlyAgentContext {
         - Keep the language concrete, calm, and short.
         - Do not invent titles, pages, surfaces, URLs, or timings.
         - Do not mention hidden context, prior sessions, reference files, or internal machinery.
-        - For Driftly reviews and daily or weekly summaries, use the `\(skillName)` skill when it is available.
+        - For single-session Driftly reviews, use the `\(skillName)` skill when it is available.
+        - For daily or weekly pattern writing across multiple saved sessions, use the `\(patternSkillName)` skill when it is available.
         - Learned patterns are soft context only. Current-session evidence wins.
         """
     }
@@ -30,7 +32,8 @@ enum DriftlyAgentContext {
         - Keep the language concrete, calm, and short.
         - Do not invent titles, pages, surfaces, URLs, or timings.
         - Do not mention hidden context, prior sessions, reference files, or internal machinery.
-        - For Driftly reviews and daily or weekly summaries, use the `\(skillName)` skill when it is available.
+        - For single-session Driftly reviews, use the `\(skillName)` skill when it is available.
+        - For daily or weekly pattern writing across multiple saved sessions, use the `\(patternSkillName)` skill when it is available.
         - Learned patterns are soft context only. Current-session evidence wins.
         """
     }
@@ -48,21 +51,13 @@ enum DriftlyAgentContext {
         What this skill is for:
         - Produce sharp, human Driftly reviews.
         - Keep current-session evidence as the source of truth.
-        - Use recent local patterns only to improve wording and next-step quality.
+        - Stay grounded in the single review packet provided for the current block.
 
         Session review workflow:
-        1. Read `references/what-driftly-tracks.md`.
-        2. Read `references/output-style.md`.
-        3. Read `references/recent-patterns.md` if it exists.
-        4. For a session review, read the session packet files in `session/`:
-           - `goal.txt`
-           - `session-facts.md`
-           - `timeline.md`
-           - `session.json`
-        5. Use `session-facts.md` and `timeline.md` to understand the shape of the block.
-        6. Use `session.json` for exact labels, timings, domains, commands, titles, and allowed mentions when needed.
-        7. If current evidence conflicts with recent patterns, trust the current evidence.
-        8. Never mention the skill, reference files, prior sessions, hidden memory, or internal machinery in the final output.
+        1. Read the single grounded session packet the caller points you to.
+        2. Use only the evidence inside that packet.
+        3. Do not explore unrelated files or look for extra context.
+        4. Never mention the skill, hidden memory, or internal machinery in the final output.
 
         Decision order:
         1. Start from the stated goal.
@@ -81,6 +76,8 @@ enum DriftlyAgentContext {
         Headline rules:
         - Keep it short and plain.
         - Name the real thread, not just the open app.
+        - Make it slightly more interpretive than the summary, not a copy of sentence 1.
+        - If the summary names the visible sequence, let the headline name the state the block fell into.
         - Do not start the headline with "This stayed" or "This never".
         - Do not use fallback verdicts like "This never became coding." Name what it became instead.
         - Prefer phrases like repo work, setup thrash, feed checking, tab hopping, browser churn, spec reading, or video drift.
@@ -91,6 +88,9 @@ enum DriftlyAgentContext {
         - Usually write exactly two short sentences.
         - Sentence 1 says what mostly happened.
         - Sentence 2 says what weakened it, or what still held if it stayed mostly on-task.
+        - Keep each sentence compact and easy to scan.
+        - Prefer a simple setup sentence, then an evidence or consequence sentence.
+        - Avoid long comma-heavy sentences that try to explain the whole block at once.
         - Mention one or two concrete surfaces, titles, pages, repos, files, or tools when visible.
         - Use browser site names over browser shells when site evidence is visible.
         - If Zoom, YouTube, GitHub, X, Telegram, or another named surface explains the block, do not mention Chrome or Safari.
@@ -104,6 +104,7 @@ enum DriftlyAgentContext {
         Insight rules:
         - Keep it to one sentence.
         - Make it usable right away.
+        - Start with a concrete action verb when possible.
         - Prefer a stop-and-replace move or a keep-and-cut move.
         - Name the concrete surface to close, keep, or return to when visible.
         - Avoid generic advice like "maintain focus", "refocus on the task", or "return to your main goal".
@@ -131,6 +132,50 @@ enum DriftlyAgentContext {
         - The insight points toward the stated goal instead of the distraction.
         - `entities` only include surfaces that actually mattered.
         - `links` only include URLs that were visibly opened during the session.
+        """
+    }
+
+    static func patternSkillMarkdown() -> String {
+        """
+        ---
+        name: \(patternSkillName)
+        description: Use when writing Driftly daily or weekly reflections across a provided time window of saved sessions. Extracts the clearest repeated pattern in a few calm sentences instead of summarizing every block.
+        ---
+
+        Use this skill only for Driftly daily or weekly pattern writing across multiple saved sessions.
+        Do not use it for single-session reviews, UI copy, docs, marketing, or code changes.
+
+        What this skill is for:
+        - Extract the clearest repeated pattern from the provided time window.
+        - Write a short reflection, not a dashboard recap.
+        - Stay grounded in the saved sessions the caller provides.
+
+        Pattern-writing workflow:
+        1. Read the provided timeframe facts and saved sessions.
+        2. Look for what repeated, not what was merely present once.
+        3. Name one main pattern, one supporting or blocking force, and one small next move.
+        4. Never mention the skill, hidden memory, or internal machinery in the final output.
+
+        Writing contract:
+        - `title` names the period pattern in plain language.
+        - `reflection` is 3 to 5 short sentences.
+
+        Pattern rules:
+        - Prefer repeated behavior over one-off highlights.
+        - Mention specific goals, headlines, or surfaces only when they sharpen the pattern.
+        - Use at most one or two concrete numbers.
+        - Do not try to recap every saved session.
+        - Do not sound like analytics software, a therapist, or a consultant.
+        - Avoid labels like productivity summary, alignment assessment, or weekly report.
+        - Keep the language plain, human, and slightly interpretive.
+
+        Reflection rules:
+        - Keep it sentence-based.
+        - Sentence 1 should say what the user tends to do.
+        - Sentence 2 should say why that pattern seems to happen.
+        - Sentence 3 should say what helps or gets in the way.
+        - Sentence 4 or 5 can say what to watch for next time.
+        - Keep the whole `reflection` under 110 words.
         """
     }
 
@@ -164,71 +209,20 @@ enum DriftlyAgentContext {
         """
     }
 
-    static func trackedEvidenceMarkdown() -> String {
+    static func openAIMetadataYAML(
+        displayName: String,
+        shortDescription: String,
+        defaultPrompt: String
+    ) -> String {
         """
-        # What Driftly tracks
+        interface:
+          display_name: "\(displayName)"
+          short_description: "\(shortDescription)"
+          default_prompt: "\(defaultPrompt)"
 
-        Driftly writes from local desktop evidence, not from mind-reading.
-
-        Driftly can usually see:
-        - frontmost app switches
-        - window titles from Accessibility
-        - browser tab titles and domains
-        - inferred sites, repos, files, and surfaces
-        - shell commands and working directories when shell integration is on
-        - clipboard previews
-        - quick notes
-        - idle and resume events
-        - lightweight timeline segments and surface switches
-
-        Driftly does not directly know:
-        - what the user intended unless the goal says it
-        - the semantic content of a whole page beyond visible titles and labels
-        - whether a page was genuinely useful unless the surface and goal make that clear
-        - what code changed, what was understood, or what was completed unless the evidence strongly supports that
-
-        Writing implications:
-        - Do not overclaim.
-        - Do not say the user was \"researching\", \"deploying\", \"orienting\", or \"building\" unless the visible surfaces support it.
-        - Use titles, domains, repos, files, commands, and timing as evidence.
-        - When the evidence is mixed, say it was mixed.
-        - When the evidence is shallow, say the thread never really settled.
+        policy:
+          allow_implicit_invocation: true
         """
     }
 
-    static func outputStyleMarkdown() -> String {
-        """
-        # Driftly output style
-
-        What Driftly should do:
-        - Sound like a sharp human reflection, not analytics software.
-        - Lead with what the block became.
-        - Use plain phrases like repo study, setup, feed checking, tab hopping, spec reading, or YouTube drift.
-        - Use one or two concrete surfaces that mattered.
-        - Use one useful number when it sharpens the point.
-        - Make the next step immediate and specific.
-        - Keep the wording calm and non-dramatic.
-
-        What Driftly should avoid:
-        - dashboard phrasing like dominated your time block, accounted for, remained the dominant surface, desktop activity, time period
-        - abstract phrasing like alignment, fragmentation, orientation, exploration, reconnaissance, optimization
-        - generic verdicts like partially matched the building goal or your desktop activity didn't align
-        - generic headlines like This stayed on..., This never..., or This never really became coding
-        - empty summaries like watched YouTube videos and used Codex
-        - blamey headlines like you got pulled into
-        - full distracting video titles unless the goal was explicitly to watch that video
-        - long app lists when one thread explains the block
-
-        Preferred shape:
-        - headline: what the block became
-        - summary sentence 1: what mostly happened
-        - summary sentence 2: what weakened it or what still held
-        - insight: a direct next move with the concrete surface to close, keep, or return to
-
-        Good examples:
-        - "Codex held about 9 minutes, but Telegram and Zoom kept breaking the thread."
-        - "Most of the block stayed on YouTube, while Codex only showed up in short checks."
-        - "Close Telegram and return to the repo thread in Codex."
-        """
-    }
 }

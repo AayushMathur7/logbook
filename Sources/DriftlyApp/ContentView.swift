@@ -27,7 +27,6 @@ struct ContentView: View {
     @State private var activePane: MainPane = .session
     @State var sessionGoalDraft = ""
     @State private var sessionPaneStateBeforeHistory: SessionScreenState?
-    @State private var showSummariesPopover = false
 
     var body: some View {
         ZStack {
@@ -99,6 +98,19 @@ struct ContentView: View {
 
             Spacer(minLength: 0)
 
+            if !model.reviewProviderStatusDidLoad {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.62)
+                        .tint(DriftlyStyle.subtleText.opacity(0.42))
+
+                    Text("Checking setup…")
+                        .font(.system(size: 10, weight: .regular))
+                        .foregroundStyle(DriftlyStyle.subtleText.opacity(0.52))
+                }
+            }
+
             Button {
                 if activePane == .history {
                     activePane = .session
@@ -126,27 +138,6 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .disabled(model.historySessions.isEmpty)
             .help(activePane == .history ? "Session" : "History")
-
-            if model.latestDailySummary != nil || model.latestWeeklySummary != nil {
-                Button {
-                    showSummariesPopover.toggle()
-                } label: {
-                    Label("Summaries", systemImage: "doc.text")
-                        .font(.system(size: 11, weight: .semibold))
-                        .padding(.horizontal, 10)
-                        .frame(height: 28)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .overlay(
-                            Capsule()
-                                .stroke(DriftlyStyle.cardStroke, lineWidth: 1)
-                        )
-                }
-                .buttonStyle(.plain)
-                .popover(isPresented: $showSummariesPopover, arrowEdge: .top) {
-                    summariesPopover
-                }
-                .help("Summaries")
-            }
 
             Button {
                 activeSheet = .settings
@@ -211,44 +202,6 @@ struct ContentView: View {
             Spacer(minLength: 18)
         }
         .frame(minHeight: WindowMetrics.height - 92)
-    }
-
-    private var summariesPopover: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Summaries")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(DriftlyStyle.subtleText)
-                .padding(.bottom, 2)
-
-            if let daily = model.latestDailySummary {
-                Button {
-                    openHistorySummary(.daily)
-                } label: {
-                    SummaryPopoverRow(summary: daily)
-                }
-                .buttonStyle(.plain)
-            }
-
-            if let weekly = model.latestWeeklySummary {
-                Button {
-                    openHistorySummary(.weekly)
-                } label: {
-                    SummaryPopoverRow(summary: weekly)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(12)
-        .frame(width: 280, alignment: .leading)
-    }
-
-    private func openHistorySummary(_ kind: StoredPeriodicSummaryKind) {
-        if activePane != .history {
-            sessionPaneStateBeforeHistory = model.surfaceState
-            activePane = .history
-        }
-        model.selectPeriodicSummary(kind)
-        showSummariesPopover = false
     }
 
     private func timelinePhases(from segments: [TimelineSegment]) -> [TimelinePhase] {
@@ -575,47 +528,5 @@ struct ContentView: View {
             .first(where: { !$0.isEmpty })
         guard file != nil || repo != nil else { return nil }
         return TimelineContext(file: file, repo: repo)
-    }
-}
-
-private let summaryPopoverGeneratedAtFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "d MMM yyyy, h:mm a"
-    return formatter
-}()
-
-private struct SummaryPopoverRow: View {
-    let summary: StoredPeriodicSummary
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(summary.kind == .daily ? "Daily" : "Weekly")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(DriftlyStyle.subtleText)
-
-                Spacer(minLength: 8)
-
-                Text("Ran \(summaryPopoverGeneratedAtFormatter.string(from: summary.generatedAt))")
-                    .font(.system(size: 10))
-                    .foregroundStyle(DriftlyStyle.subtleText.opacity(0.76))
-            }
-
-            Text(summary.title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(DriftlyStyle.text)
-                .lineLimit(2)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(DriftlyStyle.badgeFill.opacity(0.78))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(DriftlyStyle.cardStroke, lineWidth: 1)
-        )
     }
 }

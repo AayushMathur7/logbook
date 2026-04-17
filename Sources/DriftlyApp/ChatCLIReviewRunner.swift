@@ -28,7 +28,34 @@ enum ChatCLITool: String, Hashable {
         case .codex:
             return "codex login"
         case .claude:
-            return "claude auth login"
+            return "printf 'Claude Code will open in Terminal. If needed, run /login inside Claude Code to finish signing in locally.\\n\\n'; claude"
+        }
+    }
+
+    var signInHint: String {
+        switch self {
+        case .codex:
+            return "Opens Terminal and runs `codex login` on this Mac."
+        case .claude:
+            return "Opens Claude Code in Terminal so you can finish `/login` locally on this Mac."
+        }
+    }
+
+    var setupActionTitle: String {
+        switch self {
+        case .codex:
+            return "Open Codex login"
+        case .claude:
+            return "Open Claude sign-in"
+        }
+    }
+
+    var setupCommandLabel: String {
+        switch self {
+        case .codex:
+            return "codex login"
+        case .claude:
+            return "claude"
         }
     }
 }
@@ -173,7 +200,7 @@ enum ChatCLIError: LocalizedError {
         case let .notInstalled(tool):
             return "\(tool.displayName) is not installed."
         case let .notAuthenticated(tool):
-            return "\(tool.displayName) is installed, but you are not signed in yet."
+            return "\(tool.displayName) is installed, but the local CLI is not signed in yet. Open \(tool.setupActionTitle.lowercased()) from Driftly or run `\(tool.setupCommandLabel)` in Terminal."
         case let .timedOut(tool, seconds):
             return "\(tool.displayName) timed out after \(seconds) seconds."
         case let .emptyResponse(tool):
@@ -399,10 +426,7 @@ enum ChatCLIReviewRunner {
                 )
             }
 
-            let output = (try? String(contentsOf: outputPath, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !output.isEmpty else {
-                throw ChatCLIError.emptyResponse(tool)
-            }
+            let output = try readRequiredOutput(from: outputPath, tool: tool)
 
             return ChatCLIRunResult(prompt: prompt, output: output, rawStdout: result.stdout, stderr: result.stderr)
         case .claude:
@@ -482,10 +506,7 @@ enum ChatCLIReviewRunner {
                 )
             }
 
-            let output = (try? String(contentsOf: outputPath, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !output.isEmpty else {
-                throw ChatCLIError.emptyResponse(tool)
-            }
+            let output = try readRequiredOutput(from: outputPath, tool: tool)
 
             return ChatCLIRunResult(prompt: prompt, output: output, rawStdout: result.stdout, stderr: result.stderr)
         case .claude:
@@ -545,74 +566,65 @@ enum ChatCLIReviewRunner {
         insightWritingSkill: String?,
         workspaceFiles: [ChatCLIWorkspaceFile]
     ) throws {
+        _ = insightWritingSkill
         switch tool {
         case .codex:
             let agentsPath = directory.appendingPathComponent("AGENTS.md")
             try writeFileIfNeeded(DriftlyAgentContext.codexAgentsMarkdown(), to: agentsPath)
-
-            let skillDirectory = directory
-                .appendingPathComponent(".agents", isDirectory: true)
-                .appendingPathComponent("skills", isDirectory: true)
-                .appendingPathComponent(DriftlyAgentContext.skillName, isDirectory: true)
-            try FileManager.default.createDirectory(at: skillDirectory, withIntermediateDirectories: true)
-            try writeFileIfNeeded(DriftlyAgentContext.skillMarkdown(), to: skillDirectory.appendingPathComponent("SKILL.md"))
-            try writeFileIfNeeded(
-                DriftlyAgentContext.openAIMetadataYAML(),
-                to: skillDirectory
-                    .appendingPathComponent("agents", isDirectory: true)
-                    .appendingPathComponent("openai.yaml")
+            try writeCodexSkill(
+                named: DriftlyAgentContext.skillName,
+                markdown: DriftlyAgentContext.skillMarkdown(),
+                metadata: DriftlyAgentContext.openAIMetadataYAML()
             )
-            try writeFileIfNeeded(
-                DriftlyAgentContext.trackedEvidenceMarkdown(),
-                to: skillDirectory
-                    .appendingPathComponent("references", isDirectory: true)
-                    .appendingPathComponent("what-driftly-tracks.md")
-            )
-            try writeFileIfNeeded(
-                DriftlyAgentContext.outputStyleMarkdown(),
-                to: skillDirectory
-                    .appendingPathComponent("references", isDirectory: true)
-                    .appendingPathComponent("output-style.md")
-            )
-            try writeFileIfNeeded(
-                DriftlyAgentContext.recentPatternsMarkdown(from: insightWritingSkill),
-                to: skillDirectory
-                    .appendingPathComponent("references", isDirectory: true)
-                    .appendingPathComponent("recent-patterns.md")
+            try writeCodexSkill(
+                named: DriftlyAgentContext.patternSkillName,
+                markdown: DriftlyAgentContext.patternSkillMarkdown(),
+                metadata: DriftlyAgentContext.openAIMetadataYAML(
+                    displayName: "Driftly Pattern Writing",
+                    shortDescription: "Daily and weekly pattern reflections from saved Driftly sessions.",
+                    defaultPrompt: "Use this skill when writing Driftly daily or weekly pattern reflections."
+                )
             )
         case .claude:
             let claudePath = directory.appendingPathComponent("CLAUDE.md")
             try writeFileIfNeeded(DriftlyAgentContext.claudeMarkdown(), to: claudePath)
-
-            let skillDirectory = directory
-                .appendingPathComponent(".claude", isDirectory: true)
-                .appendingPathComponent("skills", isDirectory: true)
-                .appendingPathComponent(DriftlyAgentContext.skillName, isDirectory: true)
-            try FileManager.default.createDirectory(at: skillDirectory, withIntermediateDirectories: true)
-            try writeFileIfNeeded(DriftlyAgentContext.skillMarkdown(), to: skillDirectory.appendingPathComponent("SKILL.md"))
-            try writeFileIfNeeded(
-                DriftlyAgentContext.trackedEvidenceMarkdown(),
-                to: skillDirectory
-                    .appendingPathComponent("references", isDirectory: true)
-                    .appendingPathComponent("what-driftly-tracks.md")
+            try writeClaudeSkill(
+                named: DriftlyAgentContext.skillName,
+                markdown: DriftlyAgentContext.skillMarkdown()
             )
-            try writeFileIfNeeded(
-                DriftlyAgentContext.outputStyleMarkdown(),
-                to: skillDirectory
-                    .appendingPathComponent("references", isDirectory: true)
-                    .appendingPathComponent("output-style.md")
-            )
-            try writeFileIfNeeded(
-                DriftlyAgentContext.recentPatternsMarkdown(from: insightWritingSkill),
-                to: skillDirectory
-                    .appendingPathComponent("references", isDirectory: true)
-                    .appendingPathComponent("recent-patterns.md")
+            try writeClaudeSkill(
+                named: DriftlyAgentContext.patternSkillName,
+                markdown: DriftlyAgentContext.patternSkillMarkdown()
             )
         }
 
         for file in workspaceFiles {
             let path = directory.appendingPathComponent(file.relativePath)
             try writeFileIfNeeded(file.content, to: path)
+        }
+
+        func writeCodexSkill(named name: String, markdown: String, metadata: String) throws {
+            let skillDirectory = directory
+                .appendingPathComponent(".agents", isDirectory: true)
+                .appendingPathComponent("skills", isDirectory: true)
+                .appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: skillDirectory, withIntermediateDirectories: true)
+            try writeFileIfNeeded(markdown, to: skillDirectory.appendingPathComponent("SKILL.md"))
+            try writeFileIfNeeded(
+                metadata,
+                to: skillDirectory
+                    .appendingPathComponent("agents", isDirectory: true)
+                    .appendingPathComponent("openai.yaml")
+            )
+        }
+
+        func writeClaudeSkill(named name: String, markdown: String) throws {
+            let skillDirectory = directory
+                .appendingPathComponent(".claude", isDirectory: true)
+                .appendingPathComponent("skills", isDirectory: true)
+                .appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: skillDirectory, withIntermediateDirectories: true)
+            try writeFileIfNeeded(markdown, to: skillDirectory.appendingPathComponent("SKILL.md"))
         }
     }
 
@@ -642,6 +654,24 @@ enum ChatCLIReviewRunner {
         let existing = try? String(contentsOf: path, encoding: .utf8)
         guard existing != content else { return }
         try content.write(to: path, atomically: true, encoding: .utf8)
+    }
+
+    private static func readRequiredOutput(from path: URL, tool: ChatCLITool) throws -> String {
+        do {
+            let output = try String(contentsOf: path, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !output.isEmpty else {
+                throw ChatCLIError.emptyResponse(tool)
+            }
+            return output
+        } catch let error as ChatCLIError {
+            throw error
+        } catch {
+            throw ChatCLIError.executionFailed(
+                tool,
+                sanitizedUserVisibleMessage("Failed to read CLI output: \(error.localizedDescription)")
+            )
+        }
     }
 
     private static func codexCommand(

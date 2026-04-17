@@ -134,52 +134,6 @@ enum ReviewEntityRegistry {
         }
     }
 
-    static func allowedEntities(
-        from segments: [TimelineSegment],
-        events: [ActivityEvent]
-    ) -> [ReviewEntityDefinition] {
-        let textCorpus = (
-            segments.flatMap {
-                [
-                    $0.appName,
-                    $0.primaryLabel,
-                    $0.secondaryLabel,
-                    $0.repoName,
-                    $0.domain,
-                ].compactMap { $0?.lowercased() }
-            } +
-            events.flatMap {
-                [
-                    $0.appName,
-                    $0.windowTitle,
-                    $0.resourceTitle,
-                    $0.domain,
-                ].compactMap { $0?.lowercased() }
-            }
-        )
-
-        var matches: [ReviewEntityDefinition] = []
-        var seen: Set<String> = []
-
-        for definition in entities {
-            let hasAliasMatch = definition.aliases.contains { alias in
-                textCorpus.contains { value in
-                    matchesAlias(alias, in: normalizedText(value))
-                }
-            }
-            let hasDomainMatch = definition.domains.contains { domain in
-                let normalizedDomain = normalizedText(domain)
-                return textCorpus.contains { value in normalizedText(value).contains(normalizedDomain) }
-            }
-            guard hasAliasMatch || hasDomainMatch else { continue }
-
-            guard seen.insert(definition.key).inserted else { continue }
-            matches.append(definition)
-        }
-
-        return Array(matches.prefix(12))
-    }
-
     static func inferredEntityPatterns() -> [ReviewEntityPattern] {
         entities.flatMap { definition in
             definition.allLabels.map { label in
@@ -223,13 +177,8 @@ enum ReviewEntityRegistry {
     private static func matchesAlias(_ alias: String, in normalizedValue: String) -> Bool {
         let normalizedAlias = normalizedText(alias)
         guard !normalizedAlias.isEmpty else { return false }
-
-        if normalizedAlias.count <= 2 {
-            let escaped = NSRegularExpression.escapedPattern(for: normalizedAlias)
-            let pattern = "(^|\\b)\(escaped)(\\b|$)"
-            return normalizedValue.range(of: pattern, options: .regularExpression) != nil
-        }
-
-        return normalizedValue == normalizedAlias || normalizedValue.contains(normalizedAlias)
+        let escaped = NSRegularExpression.escapedPattern(for: normalizedAlias)
+        let pattern = "(^|[^[:alnum:]_.\\-/])\(escaped)(?=$|[^[:alnum:]_.\\-/])"
+        return normalizedValue.range(of: pattern, options: .regularExpression) != nil
     }
 }

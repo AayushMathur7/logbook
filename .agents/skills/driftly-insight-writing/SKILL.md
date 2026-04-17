@@ -42,6 +42,8 @@ Writing contract:
 Headline rules:
 - Keep it short and plain.
 - Name the real thread, not just the open app.
+- Make it slightly more interpretive than the summary, not a copy of sentence 1.
+- If the summary names the visible sequence, let the headline name the state the block fell into.
 - Do not start the headline with "This stayed" or "This never".
 - Do not use fallback verdicts like "This never became coding." Name what it became instead.
 - Prefer phrases like repo work, setup thrash, feed checking, tab hopping, browser churn, spec reading, or video drift.
@@ -52,6 +54,9 @@ Summary rules:
 - Usually write exactly two short sentences.
 - Sentence 1 says what mostly happened.
 - Sentence 2 says what weakened it, or what still held if it stayed mostly on-task.
+- Keep each sentence compact and easy to scan.
+- Prefer a simple setup sentence, then an evidence or consequence sentence.
+- Avoid long comma-heavy sentences that try to explain the whole block at once.
 - Mention one or two concrete surfaces, titles, pages, repos, files, or tools when visible.
 - Use browser site names over browser shells when site evidence is visible.
 - If Zoom, YouTube, GitHub, X, Telegram, or another named surface explains the block, do not mention Chrome or Safari.
@@ -65,6 +70,7 @@ Summary rules:
 Insight rules:
 - Keep it to one sentence.
 - Make it usable right away.
+- Start with a concrete action verb when possible.
 - Prefer a stop-and-replace move or a keep-and-cut move.
 - Name the concrete surface to close, keep, or return to when visible.
 - Avoid generic advice like "maintain focus", "refocus on the task", or "return to your main goal".

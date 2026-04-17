@@ -66,27 +66,6 @@ extension ContentView {
                     InlineMessage(text: errorMessage, tint: DriftlyStyle.warning)
                 }
 
-                if !model.localReviewConfigured {
-                    InlineButtonMessage(
-                        actionTitle: "Set up local review",
-                        text: model.reviewProviderSelection == .codex
-                            ? "so Driftly can write your recap with the local ChatGPT-backed Codex login after the block."
-                            : "so Driftly can write your recap after the block.",
-                        tint: DriftlyStyle.caution
-                    ) {
-                        model.requestSettingsSheet()
-                    }
-                }
-
-                if let accessibilitySummary = model.accessibilitySetupSummary {
-                    InlineActionMessage(
-                        text: accessibilitySummary,
-                        actionTitle: "Turn on Accessibility",
-                        actionURL: AccessibilityInspector.settingsURLs[0],
-                        tint: DriftlyStyle.caution
-                    )
-                }
-
                 Button {
                     startSessionFromDraft()
                 } label: {

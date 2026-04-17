@@ -93,14 +93,18 @@ final class AppModel: ObservableObject {
     @Published private(set) var accessibilityTrustedState: Bool
     @Published private(set) var reviewProviderStatusMessage = ""
     @Published private(set) var reviewProviderStatusIsError = false
+    @Published private(set) var reviewProviderStatusDidLoad = false
     @Published private(set) var codexCLIStatus = ChatCLIStatus(installed: false, authenticated: false, version: nil, message: "")
     @Published private(set) var claudeCLIStatus = ChatCLIStatus(installed: false, authenticated: false, version: nil, message: "")
     @Published private(set) var activeSessionEventCount = 0
     @Published private(set) var historySessions: [StoredSession] = []
     @Published private(set) var selectedHistoryDetail: StoredSessionDetail?
     @Published private(set) var selectedPeriodicSummaryKind: StoredPeriodicSummaryKind?
+    @Published private(set) var selectedPeriodicSummaryID: String?
     @Published private(set) var latestDailySummary: StoredPeriodicSummary?
     @Published private(set) var latestWeeklySummary: StoredPeriodicSummary?
+    @Published private(set) var dailySummaryHistory: [StoredPeriodicSummary] = []
+    @Published private(set) var weeklySummaryHistory: [StoredPeriodicSummary] = []
     @Published private(set) var periodicSummaryInFlightKinds: Set<StoredPeriodicSummaryKind> = []
     @Published private(set) var reviewInFlightSessionID: String?
     @Published private(set) var latestSessionID: String?
@@ -119,11 +123,12 @@ final class AppModel: ObservableObject {
     private var sessionTimer: Timer?
     private var permissionRefreshTimer: Timer?
     private var permissionRefreshTimerTarget: PermissionRefreshTimerTarget?
+    private var reviewProviderRefreshTask: Task<Void, Never>?
     private var captureSettings: CaptureSettings
     private var completedSessionContext: CompletedSessionContext?
     private let memoryEventLimit = 5_000
     private var notificationObservers: [NSObjectProtocol] = []
-    private let focusGuardEvaluationInterval: TimeInterval = 30
+    private let focusGuardReminderInterval: TimeInterval = 2 * 60
     private var nextFocusGuardEvaluationAt: Date?
     private var focusGuardRuntimeState = FocusGuardRuntimeState()
 
@@ -242,6 +247,33 @@ final class AppModel: ObservableObject {
         case .claude:
             return "Claude Code"
         }
+    }
+
+    var selectedChatCLITool: ChatCLITool {
+        switch reviewProviderSelection {
+        case .codex:
+            return .codex
+        case .claude:
+            return .claude
+        }
+    }
+
+    var selectedChatCLIStatus: ChatCLIStatus {
+        switch selectedChatCLITool {
+        case .codex:
+            return codexCLIStatus
+        case .claude:
+            return claudeCLIStatus
+        }
+    }
+
+    var selectedProviderNeedsSetup: Bool {
+        let status = selectedChatCLIStatus
+        return !status.installed || !status.authenticated
+    }
+
+    var selectedProviderSetupActionTitle: String {
+        selectedChatCLITool.setupActionTitle
     }
 
     var reviewProviderIntroText: String {
@@ -462,6 +494,11 @@ final class AppModel: ObservableObject {
             """,
             timeout: 1.5
         )
+        beginReviewProviderStatusPolling()
+    }
+
+    func openSelectedReviewProviderSetup() {
+        openChatCLILogin(for: selectedChatCLITool)
     }
 
     func performPermissionOnboardingAction(for kind: PermissionOnboardingKind) {
@@ -484,6 +521,7 @@ final class AppModel: ObservableObject {
     }
 
     func refreshReviewProviderStatus() async {
+        reviewProviderStatusDidLoad = false
         let detectedCodex = await Task.detached(priority: .userInitiated) {
             ChatCLIReviewRunner.detect(tool: .codex)
         }.value
@@ -522,6 +560,24 @@ final class AppModel: ObservableObject {
                 reviewProviderStatusIsError = true
             }
         }
+        reviewProviderStatusDidLoad = true
+    }
+
+    private func beginReviewProviderStatusPolling() {
+        reviewProviderRefreshTask?.cancel()
+        reviewProviderRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            for attempt in 0..<12 {
+                if Task.isCancelled { return }
+                if attempt > 0 {
+                    try? await Task.sleep(for: .seconds(2))
+                }
+                await self.refreshReviewProviderStatus()
+                if self.selectedChatCLIStatus.authenticated {
+                    return
+                }
+            }
+        }
     }
 
     func startSession() {
@@ -545,6 +601,9 @@ final class AppModel: ObservableObject {
         lastReviewErrorMessage = nil
         surfaceState = .running
         resetFocusGuardState()
+        if focusGuardPreset != .off {
+            nextFocusGuardEvaluationAt = startedAt.addingTimeInterval(focusGuardReminderInterval)
+        }
         startSessionTimer()
         if focusGuardPreset != .off {
             Task { [focusGuardNotifications] in
@@ -659,7 +718,6 @@ final class AppModel: ObservableObject {
             trackFileSystemActivity: trackFileSystemActivity,
             trackClipboard: trackClipboard,
             trackPresence: trackPresence,
-            trackCalendarContext: false,
             fileWatchRoots: Self.parseMultilineList(fileWatchRootsInput),
             excludedAppBundleIDs: Self.parseMultilineList(excludedAppBundleIDsInput),
             excludedDomains: Self.parseMultilineList(excludedDomainsInput),
@@ -751,7 +809,6 @@ final class AppModel: ObservableObject {
             trackFileSystemActivity: captureSettings.trackFileSystemActivity,
             trackClipboard: captureSettings.trackClipboard,
             trackPresence: captureSettings.trackPresence,
-            trackCalendarContext: captureSettings.trackCalendarContext,
             fileWatchRoots: captureSettings.fileWatchRoots,
             excludedAppBundleIDs: captureSettings.excludedAppBundleIDs,
             excludedDomains: captureSettings.excludedDomains,
@@ -793,16 +850,36 @@ final class AppModel: ObservableObject {
 
     func selectHistorySession(_ id: String) {
         selectedPeriodicSummaryKind = nil
+        selectedPeriodicSummaryID = nil
         selectedHistoryDetail = store.sessionDetail(id: id)
     }
 
     func selectPeriodicSummary(_ kind: StoredPeriodicSummaryKind) {
         selectedPeriodicSummaryKind = kind
+        selectedPeriodicSummaryID = periodicSummaryHistory(for: kind).first?.id
         selectedHistoryDetail = nil
+    }
+
+    func selectPeriodicSummary(_ summary: StoredPeriodicSummary) {
+        selectedPeriodicSummaryKind = summary.kind
+        selectedPeriodicSummaryID = summary.id
+        selectedHistoryDetail = nil
+    }
+
+    func isPeriodicSummaryInFlight(_ kind: StoredPeriodicSummaryKind) -> Bool {
+        periodicSummaryInFlightKinds.contains(kind)
+    }
+
+    func regenerateSelectedPeriodicSummary() {
+        guard let summary = selectedPeriodicSummary() else { return }
+        Task { [weak self] in
+            await self?.regeneratePeriodicSummary(summary)
+        }
     }
 
     func selectHistoryLibrary() {
         selectedPeriodicSummaryKind = nil
+        selectedPeriodicSummaryID = nil
         ensureHistorySelection()
     }
 
@@ -1110,18 +1187,14 @@ final class AppModel: ObservableObject {
         Task {
             do {
                 let provider = AIProviderBridge.provider(for: settings.reviewProvider)
-                let insightWritingSkill = DriftlyInsightWritingSkill.build(
-                    store: store,
-                    excludingSessionID: context.sessionID
-                ) ?? DriftlyAgentContext.recentPatternsMarkdown(from: nil)
                 let run = try await provider.generateReview(
                     settings: settings,
                     title: context.title,
                     personName: reviewDisplayName,
-                    contextPattern: store.contextPatternSnapshot(goal: context.title, excludingSessionID: context.sessionID),
-                    insightWritingSkill: insightWritingSkill,
-                    reviewLearnings: store.reviewLearningMemory()?.learnings ?? [],
-                    feedbackExamples: store.promptReadyReviewFeedbackExamples(),
+                    contextPattern: nil,
+                    insightWritingSkill: DriftlyAgentContext.skillName,
+                    reviewLearnings: [],
+                    feedbackExamples: [],
                     startedAt: context.startedAt,
                     endedAt: context.endedAt,
                     events: context.events,
@@ -1272,19 +1345,32 @@ final class AppModel: ObservableObject {
     }
 
     private func refreshPeriodicSummaries() {
-        latestDailySummary = store.latestPeriodicSummary(kind: .daily)
-        latestWeeklySummary = store.latestPeriodicSummary(kind: .weekly)
+        dailySummaryHistory = store.periodicSummaryHistory(kind: .daily)
+        weeklySummaryHistory = store.periodicSummaryHistory(kind: .weekly)
+        latestDailySummary = dailySummaryHistory.first
+        latestWeeklySummary = weeklySummaryHistory.first
 
-        if let selectedPeriodicSummaryKind, selectedPeriodicSummary(for: selectedPeriodicSummaryKind) == nil {
-            self.selectedPeriodicSummaryKind = nil
-            ensureHistorySelection()
+        if let selectedPeriodicSummaryKind {
+            let available = periodicSummaryHistory(for: selectedPeriodicSummaryKind)
+            if available.isEmpty {
+                self.selectedPeriodicSummaryKind = nil
+                self.selectedPeriodicSummaryID = nil
+                ensureHistorySelection()
+            } else if let selectedPeriodicSummaryID,
+                      !available.contains(where: { $0.id == selectedPeriodicSummaryID }) {
+                self.selectedPeriodicSummaryID = available.first?.id
+            } else if selectedPeriodicSummaryID == nil {
+                self.selectedPeriodicSummaryID = available.first?.id
+            }
         }
 
         if selectedPeriodicSummaryKind == nil, selectedHistoryDetail == nil, historySessions.isEmpty {
-            if latestDailySummary != nil {
+            if let latestDailySummary {
                 selectedPeriodicSummaryKind = .daily
-            } else if latestWeeklySummary != nil {
+                selectedPeriodicSummaryID = latestDailySummary.id
+            } else if let latestWeeklySummary {
                 selectedPeriodicSummaryKind = .weekly
+                selectedPeriodicSummaryID = latestWeeklySummary.id
             }
         }
     }
@@ -1295,11 +1381,19 @@ final class AppModel: ObservableObject {
     }
 
     private func selectedPeriodicSummary(for kind: StoredPeriodicSummaryKind) -> StoredPeriodicSummary? {
+        let summaries = periodicSummaryHistory(for: kind)
+        guard let selectedPeriodicSummaryID else {
+            return summaries.first
+        }
+        return summaries.first(where: { $0.id == selectedPeriodicSummaryID }) ?? summaries.first
+    }
+
+    func periodicSummaryHistory(for kind: StoredPeriodicSummaryKind) -> [StoredPeriodicSummary] {
         switch kind {
         case .daily:
-            return latestDailySummary
+            return dailySummaryHistory
         case .weekly:
-            return latestWeeklySummary
+            return weeklySummaryHistory
         }
     }
 
@@ -1423,6 +1517,7 @@ final class AppModel: ObservableObject {
     func snoozeFocusGuardPrompt() {
         guard let activeSession, let prompt = activeFocusGuardPrompt else { return }
         focusGuardRuntimeState.snoozedUntil = Date().addingTimeInterval(TimeInterval(focusGuardSettings.cooldownMinutes * 60))
+        nextFocusGuardEvaluationAt = focusGuardRuntimeState.snoozedUntil
         append(focusGuardEvent(kind: .focusGuardSnoozed, sessionID: activeSession.id, prompt: prompt))
         activeFocusGuardPrompt = nil
     }
@@ -1549,30 +1644,58 @@ private extension AppModel {
         guard !periodicSummaryInFlightKinds.contains(window.kind) else { return }
         guard store.periodicSummary(kind: window.kind, periodStart: window.periodStart, periodEnd: window.periodEnd) == nil else { return }
 
-        let sessions = store.sessions(overlapping: window.periodStart, and: window.periodEnd)
+        await generatePeriodicSummary(
+            kind: window.kind,
+            periodStart: window.periodStart,
+            periodEnd: window.periodEnd,
+            settings: settings,
+            notifyWhenReady: settings.summaryAutomation.notifyWhenReady
+        )
+    }
+
+    func regeneratePeriodicSummary(_ summary: StoredPeriodicSummary) async {
+        let settings = currentCaptureSettings()
+        guard reviewProviderSetupIssue(for: settings.reviewProvider) == nil else { return }
+        await generatePeriodicSummary(
+            kind: summary.kind,
+            periodStart: summary.periodStart,
+            periodEnd: summary.periodEnd,
+            settings: settings,
+            notifyWhenReady: false
+        )
+    }
+
+    private func generatePeriodicSummary(
+        kind: StoredPeriodicSummaryKind,
+        periodStart: Date,
+        periodEnd: Date,
+        settings: CaptureSettings,
+        notifyWhenReady: Bool
+    ) async {
+        guard !periodicSummaryInFlightKinds.contains(kind) else { return }
+
+        let sessions = store.sessions(overlapping: periodStart, and: periodEnd)
         guard !sessions.isEmpty else { return }
 
-        periodicSummaryInFlightKinds.insert(window.kind)
-        defer { periodicSummaryInFlightKinds.remove(window.kind) }
+        periodicSummaryInFlightKinds.insert(kind)
+        defer { periodicSummaryInFlightKinds.remove(kind) }
 
         do {
             let provider = AIProviderBridge.provider(for: settings.reviewProvider)
-            let insightWritingSkill = DriftlyInsightWritingSkill.build(store: store)
-                ?? DriftlyAgentContext.recentPatternsMarkdown(from: nil)
             let summary = try await provider.generatePeriodicSummary(
                 settings: settings,
-                kind: window.kind,
-                periodStart: window.periodStart,
-                periodEnd: window.periodEnd,
-                insightWritingSkill: insightWritingSkill,
+                kind: kind,
+                periodStart: periodStart,
+                periodEnd: periodEnd,
+                insightWritingSkill: DriftlyAgentContext.patternSkillName,
                 sessions: sessions
             )
             try store.savePeriodicSummary(summary)
             refreshPeriodicSummaries()
-            await sendPeriodicSummaryNotificationIfNeeded(summary, enabled: settings.summaryAutomation.notifyWhenReady)
+            await sendPeriodicSummaryNotificationIfNeeded(summary, enabled: notifyWhenReady)
         } catch {
             ReviewDebugLogger.logReviewFailure(
-                sessionTitle: "\(window.kind.displayName) refresh",
+                sessionTitle: "\(kind.displayName) refresh",
                 error: error.localizedDescription
             )
         }
@@ -1608,86 +1731,35 @@ private extension AppModel {
     }
 
     func evaluateFocusGuardIfNeeded(now: Date, session: FocusSession) {
-        guard now >= (nextFocusGuardEvaluationAt ?? session.startedAt) else { return }
-        nextFocusGuardEvaluationAt = now.addingTimeInterval(focusGuardEvaluationInterval)
-
-        let sessionEvents = currentSessionEvents(for: session, endingAt: now)
-        let decision = FocusGuardEvaluator.evaluate(
-            goal: session.title,
-            session: session,
-            events: sessionEvents,
-            settings: focusGuardSettings,
-            state: focusGuardRuntimeState,
-            now: now,
-            isUserIdle: isSessionPaused(sessionEvents)
-        )
-
-        focusGuardRuntimeState = decision.state
-        focusGuardAssessment = decision.assessment
-
-        if decision.recordedRecovery {
-            append(
-                ActivityEvent(
-                    occurredAt: now,
-                    source: .manual,
-                    kind: .focusGuardRecovered,
-                    appName: "Driftly",
-                    resourceTitle: decision.assessment.reason,
-                    relatedID: session.id
-                )
-            )
-            activeFocusGuardPrompt = nil
-        }
-
-        guard decision.shouldPrompt,
-              let promptMessage = decision.promptMessage,
-              let promptReason = decision.promptReason else {
+        guard focusGuardPreset != .off else { return }
+        guard now >= (nextFocusGuardEvaluationAt ?? session.startedAt.addingTimeInterval(focusGuardReminderInterval)) else {
             return
         }
 
-        let delivery: FocusGuardPromptDelivery = .notification
-        let fallbackMessage = promptMessage
-        let assessment = decision.assessment
-        let currentEvents = sessionEvents
+        if let snoozedUntil = focusGuardRuntimeState.snoozedUntil, snoozedUntil > now {
+            nextFocusGuardEvaluationAt = snoozedUntil
+            return
+        }
 
-        Task { [weak self, focusGuardNotifications] in
-            guard let self else { return }
+        guard session.endsAt.timeIntervalSince(now) > 15 else { return }
 
-            let generatedMessage: String
-            let settings = self.currentCaptureSettings()
-            if self.reviewProviderSetupIssue(for: settings.reviewProvider) == nil {
-                do {
-                    let provider = AIProviderBridge.provider(for: settings.reviewProvider)
-                    generatedMessage = try await provider.generateFocusGuardNudge(
-                        settings: settings,
-                        goal: session.title,
-                        assessmentReason: promptReason,
-                        driftLabels: assessment.driftLabels,
-                        matchedLabels: assessment.matchedLabels,
-                        events: currentEvents
-                    )
-                } catch {
-                    generatedMessage = fallbackMessage
-                }
-            } else {
-                generatedMessage = fallbackMessage
-            }
+        nextFocusGuardEvaluationAt = now.addingTimeInterval(focusGuardReminderInterval)
 
-            await MainActor.run {
-                guard self.activeSession?.id == session.id else { return }
-                let prompt = FocusGuardPrompt(
-                    sessionID: session.id,
-                    message: generatedMessage,
-                    reason: promptReason,
-                    shownAt: now,
-                    delivery: delivery
-                )
-                self.activeFocusGuardPrompt = prompt
-                self.append(self.focusGuardEvent(kind: .focusGuardPrompted, sessionID: session.id, prompt: prompt))
-                Task { [focusGuardNotifications] in
-                    await focusGuardNotifications.schedule(prompt: prompt)
-                }
-            }
+        let prompt = FocusGuardPrompt(
+            sessionID: session.id,
+            message: "I hope you're focused on your work.",
+            reason: "Session reminder",
+            shownAt: now,
+            delivery: .notification
+        )
+
+        activeFocusGuardPrompt = prompt
+        focusGuardRuntimeState.lastPromptAt = now
+        focusGuardRuntimeState.promptCount += 1
+        append(focusGuardEvent(kind: .focusGuardPrompted, sessionID: session.id, prompt: prompt))
+
+        Task { [focusGuardNotifications] in
+            await focusGuardNotifications.schedule(prompt: prompt)
         }
     }
 

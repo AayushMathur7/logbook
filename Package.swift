@@ -33,9 +33,6 @@ let package = Package(
                 .product(name: "SVGView", package: "SVGView"),
             ],
             path: "Sources/DriftlyApp",
-            exclude: [
-                "main.swift",
-            ],
             resources: [
                 .process("Resources"),
             ]

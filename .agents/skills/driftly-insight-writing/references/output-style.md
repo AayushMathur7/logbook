@@ -25,6 +25,13 @@ Preferred shape:
 - summary sentence 2: what weakened it or what still held
 - insight: a direct next move with the concrete surface to close, keep, or return to
 
+Stylistic preferences:
+- make the headline add a read on the block, not just repeat the first sentence
+- keep the summary as two short, scannable sentences
+- prefer a setup sentence followed by an evidence or consequence sentence
+- avoid long comma-heavy summary sentences
+- make the insight start with a direct action when possible
+
 Good examples:
 - "Codex held about 9 minutes, but Telegram and Zoom kept breaking the thread."
 - "Most of the block stayed on YouTube, while Codex only showed up in short checks."

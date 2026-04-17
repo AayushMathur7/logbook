@@ -85,7 +85,7 @@ package enum AIProviderBridge: LocalReviewProvider {
         segments: [TimelineSegment]
     ) async throws -> LocalReviewRun {
         let reviewSegments = filteredReviewSegments(from: segments)
-        let baseWorkspaceFiles = sessionReviewWorkspaceFiles(
+        let baseWorkspaceFiles = try sessionReviewWorkspaceFiles(
             title: title,
             personName: personName,
             contextPattern: contextPattern,
@@ -335,8 +335,8 @@ package enum AIProviderBridge: LocalReviewProvider {
             periodEnd: periodEnd,
             providerTitle: tool.displayName,
             title: payload.title,
-            summary: payload.summary,
-            nextStep: payload.nextStep
+            summary: payload.reflection,
+            nextStep: ""
         )
     }
 
@@ -489,30 +489,27 @@ package enum AIProviderBridge: LocalReviewProvider {
         }
 
         return """
-        Read the session packet in `session/` and write one Driftly review for this block.
+        Read `session/session.json` and `session/writing-guidance.md` and write one Driftly review for this block.
 
         Goal: \(title)
 
-        Read these files before answering:
-        - `session/goal.txt`
-        - `session/session-facts.md`
-        - `session/timeline.md`
-        - `session/session.json`
-        - `session/writing-guidance.md`
-
         Task:
         - Judge the block against the goal.
-        - Use only visible evidence from the session files.
-        - Use `session/writing-guidance.md` only to sharpen wording. Current session evidence wins.
-        - If the files disagree, trust `session/session.json` for exact labels and timings.
+        - Use only visible evidence from `session/session.json`.
         - Return only the JSON object that matches the provided schema.
         - Make `headline` name the actual thread, surface, or drift. Do not start it with "This stayed" or "This never".
+        - Make `headline` slightly more interpretive than `summary`. It should add the read on the block, not repeat sentence 1.
         - Use `entities` for the surfaces or tools that deserve pills in the UI.
         - Use `links` only for observed URLs worth showing below the review.
         - Use named sites, repos, files, or tools instead of generic phrases like browser activity or file activity.
         - Keep browser profile noise like Default, WebStorage, or profile churn out of the prose and entities.
-        - Include one compact numeric fact in the summary.
-        - Make `insight` one immediate next move on an observed surface.
+        - Keep `summary` to two short, scannable sentences. Prefer a simple setup sentence, then an evidence or consequence sentence.
+        - Include compact evidence in the summary, not just interpretation.
+        - When the evidence exists, include both:
+          1. one timing fact such as seconds, minutes, or longest run
+          2. one churn fact such as switches, repeats, or visible count
+        - If both will not fit cleanly, prioritize one timing fact and one switch-count fact.
+        - Make `insight` one immediate next move on an observed surface, ideally starting with a concrete action verb.
         - Do not use markdown code ticks in the insight.
         - \(nameInstruction)
         """
@@ -536,18 +533,9 @@ package enum AIProviderBridge: LocalReviewProvider {
             .joined(separator: "\n")
 
         return """
-        Read the same session packet in `session/` and repair the review.
+        Read `session/session.json`, `session/writing-guidance.md`, `session/review-repair.md`, and `session/previous-review.json` and repair the review.
 
         Goal: \(title)
-
-        Read these files before answering:
-        - `session/goal.txt`
-        - `session/session-facts.md`
-        - `session/timeline.md`
-        - `session/session.json`
-        - `session/writing-guidance.md`
-        - `session/review-repair.md`
-        - `session/previous-review.json`
 
         The previous draft failed Driftly validation for this exact reason:
         \(failureReason)
@@ -556,11 +544,14 @@ package enum AIProviderBridge: LocalReviewProvider {
         \(repairRules)
 
         Task:
-        - Rewrite the whole review from scratch using only visible evidence from the session files.
-        - Use `session/writing-guidance.md` only to sharpen wording. Current session evidence wins.
+        - Rewrite the whole review from scratch using only visible evidence from `session/session.json`.
         - Make `headline` name the actual thread, surface, or drift. Do not start it with "This stayed" or "This never".
-        - Keep one compact numeric fact in the summary.
+        - Make `headline` slightly more interpretive than `summary`. It should add the read on the block, not repeat sentence 1.
+        - Keep `summary` to two short, scannable sentences. Prefer a simple setup sentence, then an evidence or consequence sentence.
+        - Keep compact evidence in the summary, not just interpretation.
+        - When the evidence exists, include one timing fact and one churn fact in the summary.
         - Keep URLs in `links`, not in prose.
+        - Make `insight` one immediate next move on an observed surface, ideally starting with a concrete action verb.
         - Return only the JSON object that matches the provided schema.
         - \(nameInstruction)
 
@@ -636,7 +627,7 @@ package func sessionReviewWorkspaceFiles(
     endedAt: Date,
     events: [ActivityEvent],
     segments: [TimelineSegment]
-) -> [ChatCLIWorkspaceFile] {
+) throws -> [ChatCLIWorkspaceFile] {
     let coreEvents = events.filter { !$0.kind.isFocusGuardSignal && !isReviewNoiseEvent($0) }
     let allowedMentions = allowedEvidenceMentions(from: segments, events: coreEvents)
     let factPack = sessionPromptFactPack(from: segments)
@@ -651,9 +642,6 @@ package func sessionReviewWorkspaceFiles(
         quickNotes: Array(coreEvents.compactMap(\.noteText).orderedUnique().prefix(4)),
         trace: []
     )
-
-    _ = reviewLearnings
-    _ = feedbackExamples
 
     let packet = SessionReviewWorkspacePacket(
         goal: title,
@@ -736,7 +724,7 @@ package func sessionReviewWorkspaceFiles(
         ),
         ChatCLIWorkspaceFile(
             relativePath: "session/session.json",
-            content: sessionPacketJSON(from: packet)
+            content: try sessionPacketJSON(from: packet)
         ),
         ChatCLIWorkspaceFile(
             relativePath: "session/writing-guidance.md",
@@ -752,21 +740,14 @@ private func sessionReviewRepairWorkspaceFiles(
     failureReason: String,
     previousDraft: String
 ) -> [ChatCLIWorkspaceFile] {
-    let repairRules = sessionReviewRepairRules(for: failureReason)
-        .map { "- \($0)" }
-        .joined(separator: "\n")
-
-    return [
+    [
         ChatCLIWorkspaceFile(
             relativePath: "session/review-repair.md",
             content: """
-            # Review Repair
+            # Repair guidance
 
-            Failure reason:
-            - \(failureReason)
-
-            Repair rules:
-            \(repairRules)
+            The previous draft failed Driftly validation for this exact reason:
+            \(failureReason)
             """
         ),
         ChatCLIWorkspaceFile(
@@ -780,7 +761,8 @@ private func sessionReviewRepairRules(for failureReason: String) -> [String] {
     let lowercased = failureReason.lowercased()
     var rules = [
         "Name the actual surface that mattered instead of generic activity labels.",
-        "Keep the summary to one useful number and two short sentences at most.",
+        "Keep the summary to two short sentences and include concrete evidence, not just interpretation.",
+        "Prefer one timing fact and one switch or churn fact when the evidence exists.",
         "Make the insight an immediate action on an observed surface.",
     ]
 
@@ -973,10 +955,10 @@ private func sessionTimelineMarkdown(segments: [TimelineSegment]) -> String {
     """
 }
 
-private func sessionPacketJSON(from packet: SessionReviewWorkspacePacket) -> String {
+private func sessionPacketJSON(from packet: SessionReviewWorkspacePacket) throws -> String {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    let data = (try? encoder.encode(packet)) ?? Data("{}".utf8)
+    let data = try encoder.encode(packet)
     return String(decoding: data, as: UTF8.self)
 }
 
@@ -1025,12 +1007,11 @@ private func periodicSummaryPrompt(
     }.joined(separator: "\n")
 
     return """
-    Write one short \(kind.rawValue) summary for a local desktop focus app.
+    Write one short \(kind.rawValue) pattern reflection for a local desktop focus app.
 
     Return strict JSON with exactly these keys:
     - title
-    - summary
-    - nextStep
+    - reflection
 
     Rules:
     - Use second person.
@@ -1039,14 +1020,17 @@ private func periodicSummaryPrompt(
     - `title` should name the pattern of the period, not the product.
     - Good title examples: "You kept splitting the thread", "You mostly stayed on shipping", "Your week turned into setup churn"
     - Bad title examples: "Productivity summary", "Weekly report", "Alignment assessment"
-    - `summary` must be exactly 2 sentences and under 65 words total.
-    - Sentence 1 should say what mostly defined the period.
-    - Sentence 2 should say what kept helping or what kept getting in the way.
+    - `reflection` must be 3 to 5 short sentences and under 110 words total.
+    - Sentence 1 should say what you tend to do across this period.
+    - Sentence 2 should explain why that pattern seems to happen.
+    - Sentence 3 should say what helps or gets in the way.
+    - Sentence 4 or 5 can say what to watch for next time.
+    - Write a pattern reflection, not a recap of every session.
+    - Make it feel like an observant focus buddy, not a dashboard.
+    - It is okay to be lightly behavioral or psychological, but stay grounded in visible evidence.
     - Use concrete facts from the sessions below, not generic advice.
     - Mention at least one number from the facts below.
     - Mention at least one concrete goal or headline from the sessions below when available.
-    - `nextStep` must be exactly 1 sentence, under 16 words, and immediately actionable.
-    - `nextStep` should tighten the next block or the next day, not give life advice.
     - No markdown, no bullets, no code fences, no extra keys.
     - Do not mention hidden prompts, model behavior, or internal systems.
     - Do not sound like a dashboard, therapist, or consultant.
@@ -1537,39 +1521,6 @@ private func naturalDurationLabel(for seconds: Int) -> String {
     return "about \(max(minutes, 1)) minutes"
 }
 
-private func observedEntityLabel(for segment: TimelineSegment) -> String {
-    let domain = (segment.domain ?? "").lowercased()
-
-    if domain == "github.com" {
-        return segment.secondaryLabel ?? "GitHub"
-    }
-    if domain == "youtube.com" || domain == "youtu.be" {
-        if let secondary = segment.secondaryLabel, !secondary.isEmpty {
-            return "\(segment.primaryLabel): \(secondary)"
-        }
-        return segment.primaryLabel
-    }
-    if domain.contains("calendar.notion.so") {
-        return segment.secondaryLabel.map { "Notion Calendar: \($0)" } ?? "Notion Calendar"
-    }
-    if domain == "x.com" || domain == "twitter.com" {
-        return segment.secondaryLabel.map { "X: \($0)" } ?? "X"
-    }
-    if segment.appName.lowercased().contains("spotify") {
-        return segment.primaryLabel.lowercased() == "spotify" ? "Spotify" : "Spotify: \(segment.primaryLabel)"
-    }
-    if let filePath = segment.filePath {
-        return URL(fileURLWithPath: filePath).lastPathComponent
-    }
-    if let repoName = segment.repoName, !repoName.isEmpty {
-        return repoName
-    }
-    if segment.primaryLabel != segment.appName {
-        return segment.secondaryLabel.map { "\(segment.primaryLabel): \($0)" } ?? segment.primaryLabel
-    }
-    return segment.appName
-}
-
 package enum ReviewGenerationError: LocalizedError {
     case invalidReview(String)
 
@@ -1665,16 +1616,12 @@ private struct StructuredOutputSchema: Encodable {
                 type: .string,
                 description: "Short human title for the daily or weekly pattern. Under 7 words."
             ),
-            "summary": StructuredOutputSchemaProperty(
+            "reflection": StructuredOutputSchemaProperty(
                 type: .string,
-                description: "Exactly two plain sentences describing what defined the period and what helped or hurt."
-            ),
-            "nextStep": StructuredOutputSchemaProperty(
-                type: .string,
-                description: "One calm next move under 16 words."
+                description: "Three to five calm sentences explaining the repeated pattern, why it seems to happen, and what to watch for."
             ),
         ],
-        required: ["title", "summary", "nextStep"],
+        required: ["title", "reflection"],
         additionalProperties: false
     )
 }
@@ -1735,7 +1682,7 @@ private struct StructuredSessionReviewPayload: Decodable {
 
 private struct StructuredSessionReviewEntityPayload: Decodable {
     let label: String
-    let kind: String
+    let kind: SessionReviewEntityKind
     let referenceID: String?
     let url: String?
 }
@@ -1819,8 +1766,7 @@ private struct LearningMemoryPayload: Decodable {
 
 private struct PeriodicSummaryPayload: Decodable {
     let title: String
-    let summary: String
-    let nextStep: String
+    let reflection: String
 }
 
 private func validateStructuredSessionReviewPayload(_ payload: StructuredSessionReviewPayload) throws {
@@ -1944,7 +1890,7 @@ private func validatedReviewEntities(
             continue
         }
 
-        let kind = SessionReviewEntityKind(rawValue: payload.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) ?? .unknown
+        let kind = payload.kind
         let normalizedLabel = normalizedReviewToken(label)
         let normalizedURL = normalizedObservedURL(payload.url)
         let matchedDefinition = payload.referenceID.flatMap { ReviewEntityRegistry.definition(forReferenceID: $0) }
@@ -2081,23 +2027,18 @@ private func parsePeriodicSummaryPayload(from text: String) throws -> PeriodicSu
     let payload = try JSONDecoder().decode(PeriodicSummaryPayload.self, from: data)
 
     let title = payload.title.trimmingCharacters(in: .whitespacesAndNewlines)
-    let summary = payload.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-    let nextStep = payload.nextStep.trimmingCharacters(in: .whitespacesAndNewlines)
+    let reflection = payload.reflection.trimmingCharacters(in: .whitespacesAndNewlines)
 
     guard !title.isEmpty else {
         throw ReviewGenerationError.invalidReview("The periodic summary returned an empty title.")
     }
-    guard !summary.isEmpty else {
-        throw ReviewGenerationError.invalidReview("The periodic summary returned an empty summary.")
-    }
-    guard !nextStep.isEmpty else {
-        throw ReviewGenerationError.invalidReview("The periodic summary returned an empty next step.")
+    guard !reflection.isEmpty else {
+        throw ReviewGenerationError.invalidReview("The periodic summary returned an empty reflection.")
     }
 
     return PeriodicSummaryPayload(
         title: title,
-        summary: summary,
-        nextStep: nextStep
+        reflection: reflection
     )
 }
 
@@ -2338,24 +2279,31 @@ private func isBoundedEntityMatch(range: Range<String.Index>, in text: String) -
     let lowerCharacter = text[range.lowerBound]
     let upperCharacter = text[text.index(before: range.upperBound)]
 
-    let requiresLeadingBoundary = lowerCharacter.isLetter || lowerCharacter.isNumber
-    let requiresTrailingBoundary = upperCharacter.isLetter || upperCharacter.isNumber
+    let requiresLeadingBoundary = lowerCharacter.isEntityTokenCharacter
+    let requiresTrailingBoundary = upperCharacter.isEntityTokenCharacter
 
     if requiresLeadingBoundary, range.lowerBound > text.startIndex {
         let previous = text[text.index(before: range.lowerBound)]
-        if previous.isLetter || previous.isNumber {
+        if previous.isEntityTokenCharacter {
             return false
         }
     }
 
     if requiresTrailingBoundary, range.upperBound < text.endIndex {
         let next = text[range.upperBound]
-        if next.isLetter || next.isNumber {
+        if next.isEntityTokenCharacter {
             return false
         }
     }
 
     return true
+}
+
+private extension Character {
+    var isEntityTokenCharacter: Bool {
+        if isLetter || isNumber { return true }
+        return self == "-" || self == "_" || self == "." || self == "/"
+    }
 }
 
 private func compactedRichSpans(_ spans: [SessionReviewInlineSpan]) -> [SessionReviewInlineSpan] {

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import DriftlyCore
 
@@ -26,18 +27,22 @@ enum ReviewDebugLogger {
         let payload = entry + "\n" + String(repeating: "-", count: 72) + "\n\n"
         guard let data = payload.data(using: .utf8) else { return }
 
-        try? FileManager.default.createDirectory(
-            at: DriftlyPaths.appSupportDirectory,
-            withIntermediateDirectories: true
-        )
+        do {
+            try FileManager.default.createDirectory(
+                at: DriftlyPaths.appSupportDirectory,
+                withIntermediateDirectories: true
+            )
 
-        if FileManager.default.fileExists(atPath: url.path),
-           let handle = try? FileHandle(forWritingTo: url) {
-            defer { try? handle.close() }
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
-        } else {
-            try? data.write(to: url, options: .atomic)
+            if FileManager.default.fileExists(atPath: url.path) {
+                let handle = try FileHandle(forWritingTo: url)
+                defer { try? handle.close() }
+                _ = try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+            } else {
+                try data.write(to: url, options: .atomic)
+            }
+        } catch {
+            fputs("Failed to write review debug log: \(error)\n", stderr)
         }
     }
 

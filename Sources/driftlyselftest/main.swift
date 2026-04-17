@@ -30,6 +30,7 @@ enum DriftlySelfTest {
             ("timeline strips browser chrome from generic titles", testTimelineCleansBrowserTitles),
             ("review workflow writes session packet files", testReviewWorkflowWritesSessionPacketFiles),
             ("review workflow parses structured entities and links", testReviewWorkflowParsesStructuredEntitiesAndLinks),
+            ("review workflow does not tag compound words as entities", testReviewWorkflowAvoidsCompoundEntityTagging),
             ("review workflow rejects raw URLs in prose", testReviewWorkflowRejectsRawURLsInProse),
             ("review workflow repairs invalid first draft", testReviewWorkflowRepairsInvalidFirstDraft),
             ("review workflow errors after repeated invalid drafts", testReviewWorkflowErrorsAfterRepeatedInvalidDrafts),
@@ -604,7 +605,7 @@ enum DriftlySelfTest {
         let context = makeReviewWorkflowContext()
         let provider = AIProviderBridge.codex
         let prompt = provider.sessionReviewPrompt(title: "Understand the Open Agents repo", personName: "Aayush")
-        let files = sessionReviewWorkspaceFiles(
+        let files = try sessionReviewWorkspaceFiles(
             title: "Understand the Open Agents repo",
             personName: "Aayush",
             contextPattern: ContextPatternSnapshot(
@@ -692,6 +693,38 @@ enum DriftlySelfTest {
         try require(review.links.count == 1, "expected one validated review link")
         try require(review.links.first?.url == "https://github.com/openai/openai-agents-python", "expected GitHub link to survive validation")
         try require(review.referenceURL == "https://github.com/openai/openai-agents-python", "expected first link to become reference URL")
+    }
+
+    static func testReviewWorkflowAvoidsCompoundEntityTagging() throws {
+        let context = makeReviewWorkflowContext()
+        let provider = AIProviderBridge.codex
+        let output = """
+        {
+          "headline": "Vercel 404 loop for driftly-web",
+          "summary": "Vercel held most of the block around the driftly-web 404 while WhatsApp only broke it briefly.",
+          "insight": "Open the driftly-web build logs on Vercel.",
+          "entities": [],
+          "links": []
+        }
+        """
+
+        let review = try provider.parseSessionReview(
+            from: output,
+            title: "Launch Driftly",
+            personName: "Aayush",
+            startedAt: context.startedAt,
+            endedAt: context.endedAt,
+            events: context.events,
+            segments: context.segments
+        )
+
+        let driftlyEntitySpans = review.summarySpans.filter {
+            $0.kind == .entity && $0.referenceID == "driftly"
+        }
+        try require(driftlyEntitySpans.isEmpty, "expected driftly-web to stay plain text instead of tagging Driftly")
+        try require(review.summarySpans.contains(where: { $0.text.contains("driftly-web") }), "expected compound text to survive")
+        try require(review.summarySpans.contains(where: { $0.kind == .entity && $0.referenceID == "vercel" }), "expected Vercel to still be inferred")
+        try require(review.summarySpans.contains(where: { $0.kind == .entity && $0.referenceID == "whatsapp" }), "expected WhatsApp to still be inferred")
     }
 
     static func testReviewWorkflowRejectsRawURLsInProse() throws {

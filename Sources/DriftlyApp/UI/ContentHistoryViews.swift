@@ -16,29 +16,9 @@ extension ContentView {
                 HStack(alignment: .top, spacing: 16) {
                     FadingEdgeScrollView {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("History")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(DriftlyStyle.subtleText)
-                                .padding(.bottom, 2)
+                            libraryScopeSelector
 
-                            if model.historySessions.isEmpty {
-                                Text("No saved sessions yet.")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(DriftlyStyle.subtleText)
-                                    .padding(.top, 4)
-                            } else {
-                                ForEach(model.historySessions) { session in
-                                    Button {
-                                        model.selectHistorySession(session.id)
-                                    } label: {
-                                        HistorySessionRow(
-                                            session: session,
-                                            isSelected: model.selectedHistoryDetail?.session.id == session.id
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
+                            librarySidebarList
                         }
                     }
                     .frame(width: 224, alignment: .top)
@@ -58,9 +38,9 @@ extension ContentView {
                             }
                         } else {
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("Select a session")
+                                Text("Select something")
                                     .font(.system(size: 18, weight: .semibold))
-                                Text("Pick a saved block on the left, or open a summary from the top bar.")
+                                Text("Pick a saved session, or switch to the daily or weekly summary on the left.")
                                     .font(.system(size: 12))
                                     .foregroundStyle(DriftlyStyle.subtleText)
                             }
@@ -75,6 +55,98 @@ extension ContentView {
         }
     }
 
+    private var libraryScopeSelector: some View {
+        HStack(spacing: 12) {
+            libraryScopeButton(
+                "Sessions",
+                isSelected: model.selectedPeriodicSummaryKind == nil
+            ) {
+                model.selectHistoryLibrary()
+            }
+
+            libraryScopeButton(
+                "Daily",
+                isSelected: model.selectedPeriodicSummaryKind == .daily,
+                isEnabled: model.latestDailySummary != nil
+            ) {
+                model.selectPeriodicSummary(.daily)
+            }
+
+            libraryScopeButton(
+                "Weekly",
+                isSelected: model.selectedPeriodicSummaryKind == .weekly,
+                isEnabled: model.latestWeeklySummary != nil
+            ) {
+                model.selectPeriodicSummary(.weekly)
+            }
+        }
+        .padding(.bottom, 4)
+    }
+
+    private var librarySidebarList: some View {
+        Group {
+            if let selectedKind = model.selectedPeriodicSummaryKind {
+                let summaries = model.periodicSummaryHistory(for: selectedKind)
+                if summaries.isEmpty {
+                    Text("No saved \(selectedKind == .daily ? "daily" : "weekly") reflections yet.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(DriftlyStyle.subtleText)
+                        .padding(.top, 4)
+                } else {
+                    ForEach(summaries) { summary in
+                        Button {
+                            model.selectPeriodicSummary(summary)
+                        } label: {
+                            PeriodicSummaryRow(
+                                summary: summary,
+                                isSelected: model.selectedPeriodicSummary()?.id == summary.id
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            } else if model.historySessions.isEmpty {
+                Text("No saved sessions yet.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(DriftlyStyle.subtleText)
+                    .padding(.top, 4)
+            } else {
+                ForEach(model.historySessions) { session in
+                    Button {
+                        model.selectHistorySession(session.id)
+                    } label: {
+                        HistorySessionRow(
+                            session: session,
+                            isSelected: model.selectedHistoryDetail?.session.id == session.id
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func libraryScopeButton(
+        _ title: String,
+        isSelected: Bool,
+        isEnabled: Bool = true,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                .foregroundStyle(
+                    !isEnabled
+                        ? DriftlyStyle.subtleText.opacity(0.38)
+                        : isSelected
+                        ? DriftlyStyle.text.opacity(0.92)
+                        : DriftlyStyle.subtleText.opacity(0.72)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+    }
+
     func periodicSummaryDetail(_ summary: StoredPeriodicSummary) -> some View {
         VStack(alignment: .leading, spacing: 22) {
             VStack(alignment: .leading, spacing: 8) {
@@ -85,9 +157,33 @@ extension ContentView {
 
                     Spacer(minLength: 8)
 
-                    Text("Ran \(summaryGeneratedStamp(summary))")
-                        .font(.system(size: 11))
-                        .foregroundStyle(DriftlyStyle.subtleText.opacity(0.78))
+                    HStack(spacing: 10) {
+                        if model.isPeriodicSummaryInFlight(summary.kind) {
+                            HStack(spacing: 6) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .scaleEffect(0.62)
+                                    .tint(DriftlyStyle.subtleText.opacity(0.42))
+
+                                Text("Regenerating…")
+                                    .font(.system(size: 10, weight: .regular))
+                                    .foregroundStyle(DriftlyStyle.subtleText.opacity(0.52))
+                            }
+                        } else {
+                            Button {
+                                model.regenerateSelectedPeriodicSummary()
+                            } label: {
+                                Text("Regenerate")
+                                    .font(.system(size: 11, weight: .regular))
+                                    .foregroundStyle(DriftlyStyle.subtleText.opacity(0.76))
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        Text("Ran \(summaryGeneratedStamp(summary))")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DriftlyStyle.subtleText.opacity(0.78))
+                    }
                 }
 
                 Text(summaryPeriodStamp(summary))
@@ -99,17 +195,10 @@ extension ContentView {
                 .font(.system(size: 24, weight: .semibold, design: .serif))
                 .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 16) {
-                Text(summary.summary)
-                    .font(.system(size: 13))
-                    .foregroundStyle(DriftlyStyle.subtleText)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text(summary.nextStep)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(DriftlyStyle.text)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            PeriodicSummaryReflectionView(
+                blocks: periodicSummaryReflectionBlocks(from: summary.summary),
+                emphasizedMarkdown: emphasizedReviewMarkdown
+            )
         }
         .padding(.horizontal, 12)
     }
@@ -162,8 +251,9 @@ extension ContentView {
             }
 
             Text(review.headline)
-                .font(.system(size: 24, weight: .semibold, design: .serif))
+                .font(.system(size: 22, weight: .semibold, design: .serif))
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 2)
 
             VStack(alignment: .leading, spacing: 16) {
                 RichReviewText(
@@ -179,7 +269,7 @@ extension ContentView {
                     MarkdownText(
                         emphasizedReviewMarkdown(insight),
                         font: .system(size: 13),
-                        color: DriftlyStyle.subtleText,
+                        color: DriftlyStyle.text.opacity(0.92),
                         useAttributedLayout: true
                     )
                 }
@@ -248,6 +338,12 @@ extension ContentView {
                 Spacer()
 
                 HStack(spacing: 8) {
+                    if model.selectedProviderNeedsSetup {
+                        chromeActionButton(model.selectedProviderSetupActionTitle, systemImage: "terminal") {
+                            model.openSelectedReviewProviderSetup()
+                        }
+                    }
+
                     primaryReviewActionButton("Start another", systemImage: "arrow.right") {
                         model.startNextSession()
                     }
@@ -266,6 +362,13 @@ extension ContentView {
                 .font(.system(size: 13))
                 .foregroundStyle(DriftlyStyle.subtleText)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if model.selectedProviderNeedsSetup {
+                Text(model.selectedChatCLITool.signInHint)
+                    .font(.system(size: 12))
+                    .foregroundStyle(DriftlyStyle.subtleText.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.horizontal, 12)
     }
@@ -308,6 +411,19 @@ extension ContentView {
                         .font(.system(size: 13))
                         .foregroundStyle(DriftlyStyle.subtleText)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    if (detail.session.reviewStatus == .failed || detail.session.reviewStatus == .unavailable),
+                       model.selectedProviderNeedsSetup {
+                        HStack(spacing: 8) {
+                            chromeActionButton(model.selectedProviderSetupActionTitle, systemImage: "terminal") {
+                                model.openSelectedReviewProviderSetup()
+                            }
+
+                            chromeActionButton("Refresh provider", systemImage: "arrow.clockwise") {
+                                Task { await model.refreshReviewProviderStatus() }
+                            }
+                        }
+                    }
                 }
             } else if let summary = detail.session.summary {
                 Text(summary)
@@ -329,9 +445,9 @@ extension ContentView {
         case .pending:
             return "This session finished, but the review has not been saved yet."
         case .unavailable:
-            return "Driftly could not generate a review because the selected AI provider was not ready."
+            return "Driftly could not generate a review because the selected AI provider was not ready on this Mac."
         case .failed:
-            return "The selected AI provider did not return a usable review for this session. Retry it after checking your provider setup or output."
+            return "The selected AI provider did not return a usable review for this session. Check the local sign-in or provider output, then retry."
         case .none, .ready:
             return nil
         }
@@ -340,9 +456,10 @@ extension ContentView {
     func chromeActionButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
-                .font(.system(size: 10, weight: .semibold))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(minWidth: 112)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
                 .background(.ultraThinMaterial, in: Capsule())
                 .overlay(
                     Capsule()
@@ -356,6 +473,7 @@ extension ContentView {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .font(.system(size: 11, weight: .semibold))
+                .frame(minWidth: 112)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
                 .background(
@@ -418,6 +536,79 @@ private let summaryGeneratedAtFormatter: DateFormatter = {
 
 private func summaryGeneratedStamp(_ summary: StoredPeriodicSummary) -> String {
     summaryGeneratedAtFormatter.string(from: summary.generatedAt)
+}
+
+private func periodicSummaryReflectionBlocks(from value: String) -> [String] {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return [] }
+
+    let explicitBlocks = trimmed
+        .components(separatedBy: "\n\n")
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    if explicitBlocks.count > 1 {
+        return explicitBlocks
+    }
+
+    let normalized = trimmed.replacingOccurrences(
+        of: #"(?<=[.!?])\s+(?=[A-Z0-9])"#,
+        with: "\n\n",
+        options: .regularExpression
+    )
+
+    let inferredBlocks = normalized
+        .components(separatedBy: "\n\n")
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+
+    return inferredBlocks.isEmpty ? [trimmed] : inferredBlocks
+}
+
+private struct PeriodicSummaryReflectionView: View {
+    let blocks: [String]
+    let emphasizedMarkdown: (String) -> String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+                MarkdownText(
+                    emphasizedMarkdown(block),
+                    font: .system(size: 13, weight: index == 0 ? .medium : .regular),
+                    color: index == 0 ? DriftlyStyle.text.opacity(0.94) : DriftlyStyle.subtleText,
+                    useAttributedLayout: true
+                )
+            }
+        }
+    }
+}
+
+private struct PeriodicSummaryRow: View {
+    let summary: StoredPeriodicSummary
+    let isSelected: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(summary.title)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(2)
+
+            Text(summaryPeriodStamp(summary))
+                .font(.system(size: 10))
+                .foregroundStyle(DriftlyStyle.subtleText.opacity(0.88))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isSelected ? DriftlyStyle.badgeFill : Color.clear)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(isSelected ? DriftlyStyle.badgeStroke : Color.clear, lineWidth: 1)
+                )
+        )
+    }
 }
 
 private struct HistoryIconButton: View {

@@ -101,7 +101,6 @@ public struct CaptureSettings: Codable, Hashable {
     public var trackFileSystemActivity: Bool
     public var trackClipboard: Bool
     public var trackPresence: Bool
-    public var trackCalendarContext: Bool
     public var fileWatchRoots: [String]
     public var excludedAppBundleIDs: [String]
     public var excludedDomains: [String]
@@ -124,7 +123,6 @@ public struct CaptureSettings: Codable, Hashable {
         trackFileSystemActivity: Bool = true,
         trackClipboard: Bool = true,
         trackPresence: Bool = true,
-        trackCalendarContext: Bool = false,
         fileWatchRoots: [String] = [],
         excludedAppBundleIDs: [String] = [],
         excludedDomains: [String] = [],
@@ -147,7 +145,6 @@ public struct CaptureSettings: Codable, Hashable {
         self.trackFileSystemActivity = trackFileSystemActivity
         self.trackClipboard = trackClipboard
         self.trackPresence = trackPresence
-        self.trackCalendarContext = trackCalendarContext
         self.fileWatchRoots = fileWatchRoots
         self.excludedAppBundleIDs = excludedAppBundleIDs
         self.excludedDomains = excludedDomains
@@ -172,7 +169,6 @@ public struct CaptureSettings: Codable, Hashable {
         case trackFileSystemActivity
         case trackClipboard
         case trackPresence
-        case trackCalendarContext
         case fileWatchRoots
         case excludedAppBundleIDs
         case excludedDomains
@@ -197,7 +193,6 @@ public struct CaptureSettings: Codable, Hashable {
         trackFileSystemActivity = try container.decodeIfPresent(Bool.self, forKey: .trackFileSystemActivity) ?? true
         trackClipboard = try container.decodeIfPresent(Bool.self, forKey: .trackClipboard) ?? true
         trackPresence = try container.decodeIfPresent(Bool.self, forKey: .trackPresence) ?? true
-        trackCalendarContext = try container.decodeIfPresent(Bool.self, forKey: .trackCalendarContext) ?? false
         fileWatchRoots = try container.decodeIfPresent([String].self, forKey: .fileWatchRoots) ?? []
         excludedAppBundleIDs = try container.decodeIfPresent([String].self, forKey: .excludedAppBundleIDs) ?? []
         excludedDomains = try container.decodeIfPresent([String].self, forKey: .excludedDomains) ?? []

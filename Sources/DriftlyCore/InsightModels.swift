@@ -25,15 +25,6 @@ public struct InsightCard: Identifiable, Hashable {
         self.why = why
     }
 
-    public static func placeholder(headline: String, focus: FocusLabel, why: String) -> InsightCard {
-        InsightCard(
-            id: "placeholder",
-            generatedAt: Date(),
-            headline: headline,
-            focus: focus,
-            why: why
-        )
-    }
 }
 
 public struct InsightWindow: Identifiable, Hashable {

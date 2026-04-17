@@ -159,11 +159,7 @@ final class FocusGuardNotificationCoordinator: NSObject, UNUserNotificationCente
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        if #available(macOS 11.0, *) {
-            return [.banner, .list, .sound]
-        } else {
-            return [.sound]
-        }
+        [.banner, .list, .sound]
     }
 
     func userNotificationCenter(

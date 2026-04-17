@@ -49,18 +49,14 @@ enum ReviewReplayCommand {
             printStoredReview(detail.review)
 
             do {
-                let insightWritingSkill = DriftlyInsightWritingSkill.build(
-                    store: store,
-                    excludingSessionID: detail.session.id
-                ) ?? DriftlyAgentContext.recentPatternsMarkdown(from: nil)
                 let run = try await provider.generateReview(
                     settings: settings,
                     title: detail.session.goal,
                     personName: nil,
-                    contextPattern: store.contextPatternSnapshot(goal: detail.session.goal, excludingSessionID: detail.session.id),
-                    insightWritingSkill: insightWritingSkill,
-                    reviewLearnings: store.reviewLearningMemory()?.learnings ?? [],
-                    feedbackExamples: store.promptReadyReviewFeedbackExamples(),
+                    contextPattern: nil,
+                    insightWritingSkill: DriftlyAgentContext.skillName,
+                    reviewLearnings: [],
+                    feedbackExamples: [],
                     startedAt: detail.session.startedAt,
                     endedAt: detail.session.endedAt,
                     events: events,

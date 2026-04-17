@@ -119,7 +119,7 @@ struct SettingsSheet: View {
                                     }
 
                                     if !model.codexCLIStatus.authenticated {
-                                        settingsChromeButton("Sign in") {
+                                        settingsChromeButton("Open sign-in") {
                                             model.openChatCLILogin(for: .codex)
                                         }
                                     }
@@ -155,7 +155,7 @@ struct SettingsSheet: View {
                                     }
 
                                     if !model.claudeCLIStatus.authenticated {
-                                        settingsChromeButton("Sign in") {
+                                        settingsChromeButton("Open sign-in") {
                                             model.openChatCLILogin(for: .claude)
                                         }
                                     }
@@ -180,21 +180,21 @@ struct SettingsSheet: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Nudges")
                                     .font(.system(size: 12, weight: .medium))
-                                Text("Send a quiet notification when Driftly sees clear drift during a session.")
+                                Text("Send a simple repeating reminder while a session is running.")
                                     .font(.system(size: 11))
                                     .foregroundStyle(DriftlyStyle.subtleText)
                                     .fixedSize(horizontal: false, vertical: true)
 
                                 captureToggleRow(
                                     title: "Enable nudges",
-                                    detail: "Uses the default cadence: waits a bit at the start, stays quiet unless drift looks clear, and sends only occasional recovery nudges.",
+                                    detail: "Sends a reminder every 2 minutes during an active session. Snooze pauses it for a few minutes.",
                                     isOn: Binding(
                                         get: { model.focusGuardEnabled },
                                         set: { model.setNudgesEnabled($0) }
                                     )
                                 )
 
-                                Text("Nudges use only local session signals and stay conservative when the evidence is mixed.")
+                                Text("These reminders are fixed and local. They do not wait for drift detection.")
                                     .font(.system(size: 11))
                                     .foregroundStyle(DriftlyStyle.subtleText)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -503,7 +503,7 @@ struct SettingsSheet: View {
 
             Text(selectedStatus.authenticated
                  ? "Signed-in CLI detected. Pick a preset model if you want, or leave it on the default."
-                 : "If the CLI is already installed, sign in once from Terminal, then hit Refresh here.")
+                 : "\(selectedTool.signInHint) Driftly will refresh the status here after you finish.")
                 .font(.system(size: 11))
                 .foregroundStyle(DriftlyStyle.subtleText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -533,7 +533,7 @@ struct SettingsSheet: View {
                 }
 
                 if status.installed && !status.authenticated {
-                    settingsChromeButton("Sign in") {
+                    settingsChromeButton("Open sign-in") {
                         model.openChatCLILogin(for: tool)
                     }
                 }

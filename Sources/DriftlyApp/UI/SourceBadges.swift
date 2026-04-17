@@ -127,6 +127,7 @@ enum SourceBadgeFactory {
         "codex": "codex",
         "claude": "claude",
         "openai": "openai",
+        "driftly": "driftly-mark-white",
         "spotify": "spotify",
         "slack": "slack",
         "linear": "linear",
