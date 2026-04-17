@@ -9,7 +9,7 @@ let package = Package(
     ],
     products: [
         .library(name: "DriftlyCore", targets: ["DriftlyCore"]),
-        .executable(name: "DriftlyApp", targets: ["DriftlyApp"]),
+        .executable(name: "DriftlyApp", targets: ["DriftlyAppExec"]),
         .executable(name: "driftly", targets: ["driftly"]),
         .executable(name: "driftly-selftest", targets: ["driftly-selftest"]),
     ],
@@ -25,7 +25,7 @@ let package = Package(
                 .linkedLibrary("sqlite3"),
             ]
         ),
-        .executableTarget(
+        .target(
             name: "DriftlyApp",
             dependencies: [
                 "DriftlyCore",
@@ -33,9 +33,17 @@ let package = Package(
                 .product(name: "SVGView", package: "SVGView"),
             ],
             path: "Sources/DriftlyApp",
+            exclude: [
+                "main.swift",
+            ],
             resources: [
                 .process("Resources"),
             ]
+        ),
+        .executableTarget(
+            name: "DriftlyAppExec",
+            dependencies: ["DriftlyApp"],
+            path: "Sources/DriftlyAppExec"
         ),
         .executableTarget(
             name: "driftly",
@@ -44,7 +52,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "driftly-selftest",
-            dependencies: ["DriftlyCore"],
+            dependencies: ["DriftlyCore", "DriftlyApp"],
             path: "Sources/driftlyselftest"
         ),
     ]

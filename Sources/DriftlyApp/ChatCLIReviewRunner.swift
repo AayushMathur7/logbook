@@ -40,11 +40,23 @@ struct ChatCLIStatus: Hashable {
     let message: String
 }
 
-struct ChatCLIRunResult {
-    let prompt: String
-    let output: String
-    let rawStdout: String
-    let stderr: String
+package struct ChatCLIRunResult {
+    package let prompt: String
+    package let output: String
+    package let rawStdout: String
+    package let stderr: String
+
+    package init(prompt: String, output: String, rawStdout: String, stderr: String) {
+        self.prompt = prompt
+        self.output = output
+        self.rawStdout = rawStdout
+        self.stderr = stderr
+    }
+}
+
+package struct ChatCLIWorkspaceFile {
+    package let relativePath: String
+    package let content: String
 }
 
 private enum JSONValue: Codable, Equatable {
@@ -234,14 +246,69 @@ private enum LoginShellRunner {
 }
 
 enum ChatCLIReviewRunner {
+    private static func resolvedExecutablePath(for tool: ChatCLITool) -> String? {
+        var candidates: [String] = []
+        var seen = Set<String>()
+
+        func appendCandidate(_ value: String?) {
+            guard let value else { return }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            guard seen.insert(trimmed).inserted else { return }
+            candidates.append(trimmed)
+        }
+
+        let environmentPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for directory in environmentPath.split(separator: ":").map(String.init) {
+            appendCandidate(URL(fileURLWithPath: directory).appendingPathComponent(tool.rawValue).path)
+        }
+
+        let homeDirectory = NSHomeDirectory()
+        let commonDirectories = [
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+            "/usr/bin",
+            "/bin",
+            "\(homeDirectory)/.local/bin",
+            "\(homeDirectory)/bin",
+            "/Applications/Codex.app/Contents/Resources"
+        ]
+        for directory in commonDirectories {
+            appendCandidate(URL(fileURLWithPath: directory).appendingPathComponent(tool.rawValue).path)
+        }
+
+        let shellLookup = LoginShellRunner.run("command -v \(tool.rawValue)", timeout: 5)
+        if shellLookup.exitCode == 0 {
+            let discoveredPath = shellLookup.stdout
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { $0.hasPrefix("/") }
+            appendCandidate(discoveredPath)
+        }
+
+        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+    }
+
     static func detect(tool: ChatCLITool) -> ChatCLIStatus {
-        let versionResult = LoginShellRunner.run("\(tool.rawValue) --version", timeout: 10)
-        guard versionResult.exitCode == 0 else {
+        guard let executablePath = resolvedExecutablePath(for: tool) else {
             return ChatCLIStatus(
                 installed: false,
                 authenticated: false,
                 version: nil,
                 message: "\(tool.displayName) was not found on this Mac."
+            )
+        }
+
+        let executable = LoginShellRunner.shellEscape(executablePath)
+        let versionResult = LoginShellRunner.run("\(executable) --version", timeout: 10)
+        guard versionResult.exitCode == 0 else {
+            return ChatCLIStatus(
+                installed: false,
+                authenticated: false,
+                version: nil,
+                message: "\(tool.displayName) was found at \(executablePath), but Driftly could not run it."
             )
         }
 
@@ -252,7 +319,7 @@ enum ChatCLIReviewRunner {
 
         switch tool {
         case .codex:
-            let statusResult = LoginShellRunner.run("codex login status", timeout: 10)
+            let statusResult = LoginShellRunner.run("\(executable) login status", timeout: 10)
             let combinedOutput = "\(statusResult.stdout)\n\(statusResult.stderr)".lowercased()
             let authenticated = statusResult.exitCode == 0 && combinedOutput.contains("logged in")
             return ChatCLIStatus(
@@ -264,7 +331,7 @@ enum ChatCLIReviewRunner {
                     : "Codex CLI is installed, but you still need to run `codex login`."
             )
         case .claude:
-            let statusResult = LoginShellRunner.run("claude auth status", timeout: 10)
+            let statusResult = LoginShellRunner.run("\(executable) auth status", timeout: 10)
             let authenticated = decodeClaudeAuthStatus(from: statusResult.stdout)
                 ?? (statusResult.exitCode == 0 && statusResult.stdout.lowercased().contains("\"loggedin\": true"))
 
@@ -285,7 +352,8 @@ enum ChatCLIReviewRunner {
         schemaJSON: String,
         model: String?,
         timeoutSeconds: Int,
-        insightWritingSkill: String? = nil
+        insightWritingSkill: String? = nil,
+        workspaceFiles: [ChatCLIWorkspaceFile] = []
     ) throws -> ChatCLIRunResult {
         let status = detect(tool: tool)
         guard status.installed else { throw ChatCLIError.notInstalled(tool) }
@@ -293,11 +361,17 @@ enum ChatCLIReviewRunner {
 
         let timeout = max(timeoutSeconds, 10)
         let baseDirectory = try ensureWorkingDirectory()
-        let runtimeContext = try prepareRuntimeContext(tool: tool, insightWritingSkill: insightWritingSkill)
+        let runtimeContext = try prepareRuntimeContext(
+            tool: tool,
+            insightWritingSkill: insightWritingSkill,
+            workspaceFiles: workspaceFiles
+        )
         let scratchDirectory = baseDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: scratchDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: scratchDirectory) }
+        defer { try? FileManager.default.removeItem(at: runtimeContext.workingDirectory) }
         let effectivePrompt = promptWithSkillHint(prompt, includeSkillHint: insightWritingSkill?.nilIfBlank != nil)
+        let executablePath = resolvedExecutablePath(for: tool)
 
         let schemaPath = scratchDirectory.appendingPathComponent("schema.json")
         try schemaJSON.write(to: schemaPath, atomically: true, encoding: .utf8)
@@ -306,6 +380,7 @@ enum ChatCLIReviewRunner {
         case .codex:
             let outputPath = scratchDirectory.appendingPathComponent("output.json")
             let command = codexCommand(
+                executablePath: executablePath,
                 prompt: effectivePrompt,
                 model: model,
                 timeoutSeconds: timeout,
@@ -332,6 +407,7 @@ enum ChatCLIReviewRunner {
             return ChatCLIRunResult(prompt: prompt, output: output, rawStdout: result.stdout, stderr: result.stderr)
         case .claude:
             let command = claudeCommand(
+                executablePath: executablePath,
                 prompt: effectivePrompt,
                 model: model,
                 schemaJSON: schemaJSON,
@@ -362,7 +438,8 @@ enum ChatCLIReviewRunner {
         prompt: String,
         model: String?,
         timeoutSeconds: Int,
-        insightWritingSkill: String? = nil
+        insightWritingSkill: String? = nil,
+        workspaceFiles: [ChatCLIWorkspaceFile] = []
     ) throws -> ChatCLIRunResult {
         let status = detect(tool: tool)
         guard status.installed else { throw ChatCLIError.notInstalled(tool) }
@@ -370,16 +447,23 @@ enum ChatCLIReviewRunner {
 
         let timeout = max(timeoutSeconds, 10)
         let baseDirectory = try ensureWorkingDirectory()
-        let runtimeContext = try prepareRuntimeContext(tool: tool, insightWritingSkill: insightWritingSkill)
+        let runtimeContext = try prepareRuntimeContext(
+            tool: tool,
+            insightWritingSkill: insightWritingSkill,
+            workspaceFiles: workspaceFiles
+        )
         let scratchDirectory = baseDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: scratchDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: scratchDirectory) }
+        defer { try? FileManager.default.removeItem(at: runtimeContext.workingDirectory) }
         let effectivePrompt = promptWithSkillHint(prompt, includeSkillHint: insightWritingSkill?.nilIfBlank != nil)
+        let executablePath = resolvedExecutablePath(for: tool)
 
         switch tool {
         case .codex:
             let outputPath = scratchDirectory.appendingPathComponent("output.txt")
             let command = codexCommand(
+                executablePath: executablePath,
                 prompt: effectivePrompt,
                 model: model,
                 timeoutSeconds: timeout,
@@ -406,6 +490,7 @@ enum ChatCLIReviewRunner {
             return ChatCLIRunResult(prompt: prompt, output: output, rawStdout: result.stdout, stderr: result.stderr)
         case .claude:
             let command = claudeCommand(
+                executablePath: executablePath,
                 prompt: effectivePrompt,
                 model: model,
                 schemaJSON: nil,
@@ -437,19 +522,28 @@ enum ChatCLIReviewRunner {
 
     private static func prepareRuntimeContext(
         tool: ChatCLITool,
-        insightWritingSkill: String?
+        insightWritingSkill: String?,
+        workspaceFiles: [ChatCLIWorkspaceFile]
     ) throws -> CLIRuntimeContext {
         let baseDirectory = try ensureWorkingDirectory()
-        let directory = baseDirectory.appendingPathComponent(tool.rawValue, isDirectory: true)
+        let directory = baseDirectory
+            .appendingPathComponent(tool.rawValue, isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try refreshProviderContext(in: directory, tool: tool, insightWritingSkill: insightWritingSkill)
+        try refreshProviderContext(
+            in: directory,
+            tool: tool,
+            insightWritingSkill: insightWritingSkill,
+            workspaceFiles: workspaceFiles
+        )
         return CLIRuntimeContext(workingDirectory: directory)
     }
 
     private static func refreshProviderContext(
         in directory: URL,
         tool: ChatCLITool,
-        insightWritingSkill: String?
+        insightWritingSkill: String?,
+        workspaceFiles: [ChatCLIWorkspaceFile]
     ) throws {
         switch tool {
         case .codex:
@@ -515,6 +609,11 @@ enum ChatCLIReviewRunner {
                     .appendingPathComponent("recent-patterns.md")
             )
         }
+
+        for file in workspaceFiles {
+            let path = directory.appendingPathComponent(file.relativePath)
+            try writeFileIfNeeded(file.content, to: path)
+        }
     }
 
     private static func promptWithSkillHint(_ prompt: String, includeSkillHint: Bool) -> String {
@@ -546,6 +645,7 @@ enum ChatCLIReviewRunner {
     }
 
     private static func codexCommand(
+        executablePath: String?,
         prompt: String,
         model: String?,
         timeoutSeconds: Int,
@@ -553,11 +653,12 @@ enum ChatCLIReviewRunner {
         outputPath: String,
         workingDirectory: String
     ) -> String {
+        let executable = LoginShellRunner.shellEscape(executablePath ?? "codex")
         var parts: [String] = [
             "cd \(LoginShellRunner.shellEscape(workingDirectory))",
             "&&",
             "exec",
-            "codex",
+            executable,
             "exec",
             "--skip-git-repo-check",
             "--sandbox",
@@ -584,19 +685,21 @@ enum ChatCLIReviewRunner {
     }
 
     private static func claudeCommand(
+        executablePath: String?,
         prompt: String,
         model: String?,
         schemaJSON: String?,
         workingDirectory: String
     ) -> String {
+        let executable = LoginShellRunner.shellEscape(executablePath ?? "claude")
         var parts: [String] = [
             "cd \(LoginShellRunner.shellEscape(workingDirectory))",
             "&&",
             "exec",
-            "claude",
+            executable,
             "-p",
             "--tools",
-            LoginShellRunner.shellEscape(""),
+            LoginShellRunner.shellEscape("default"),
             "--strict-mcp-config",
         ]
 

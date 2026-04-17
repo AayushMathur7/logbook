@@ -1,5 +1,6 @@
 import Foundation
 import DriftlyCore
+import DriftlyApp
 
 struct SelfTestFailure: Error, CustomStringConvertible {
     let description: String
@@ -27,6 +28,11 @@ enum DriftlySelfTest {
             ("timeline merges adjacent matching events", testTimelineMergesMatchingEvents),
             ("timeline infers file context from editor titles", testTimelineInfersEditorFileContext),
             ("timeline strips browser chrome from generic titles", testTimelineCleansBrowserTitles),
+            ("review workflow writes session packet files", testReviewWorkflowWritesSessionPacketFiles),
+            ("review workflow parses structured entities and links", testReviewWorkflowParsesStructuredEntitiesAndLinks),
+            ("review workflow rejects raw URLs in prose", testReviewWorkflowRejectsRawURLsInProse),
+            ("review workflow repairs invalid first draft", testReviewWorkflowRepairsInvalidFirstDraft),
+            ("review workflow errors after repeated invalid drafts", testReviewWorkflowErrorsAfterRepeatedInvalidDrafts),
             ("review feedback overwrites and keeps snapshots", testReviewFeedbackOverwriteAndSnapshots),
             ("prompt-ready feedback examples filter noise", testPromptReadyFeedbackExampleFiltering),
             ("review learning memory round trips", testReviewLearningMemoryRoundTrip),
@@ -592,6 +598,344 @@ enum DriftlySelfTest {
         let segments = TimelineDeriver.deriveSegments(from: events, sessionEnd: now.addingTimeInterval(60))
         try require(segments.count == 1, "expected one browser segment")
         try require(segments[0].primaryLabel == "New tab", "expected browser chrome suffix to be stripped")
+    }
+
+    static func testReviewWorkflowWritesSessionPacketFiles() throws {
+        let context = makeReviewWorkflowContext()
+        let provider = AIProviderBridge.codex
+        let prompt = provider.sessionReviewPrompt(title: "Understand the Open Agents repo", personName: "Aayush")
+        let files = sessionReviewWorkspaceFiles(
+            title: "Understand the Open Agents repo",
+            personName: "Aayush",
+            contextPattern: ContextPatternSnapshot(
+                sessionCount: 3,
+                alignedSurfaces: ["Codex", "GitHub"],
+                driftSurfaces: ["Telegram"],
+                commonTransitions: ["Codex → GitHub"]
+            ),
+            reviewLearnings: [
+                "Mention the repo when GitHub held the session.",
+                "Do not fall back to generic coding verdicts."
+            ],
+            feedbackExamples: [
+                SessionReviewFeedbackExample(
+                    sessionID: "session-guidance",
+                    createdAt: Date(timeIntervalSince1970: 1_715_000_000),
+                    goal: "Understand the Open Agents repo",
+                    reviewSaid: "This never really became coding.",
+                    userFeedback: "Say what it became instead of telling me it never became coding.",
+                    label: .correction
+                )
+            ],
+            startedAt: context.startedAt,
+            endedAt: context.endedAt,
+            events: context.events,
+            segments: context.segments
+        )
+
+        let byPath = Dictionary(uniqueKeysWithValues: files.map { ($0.relativePath, $0.content) })
+
+        try require(prompt.contains("session/session.json"), "expected prompt to point the model at session files")
+        try require(prompt.contains("session/writing-guidance.md"), "expected prompt to point the model at writing guidance")
+        try require(byPath["session/goal.txt"]?.contains("Goal: Understand the Open Agents repo") == true, "expected goal file")
+        try require(byPath["session/session-facts.md"]?.contains("GitHub") == true, "expected facts file to include GitHub evidence")
+        try require(byPath["session/timeline.md"]?.contains("Telegram") == true, "expected timeline file to include Telegram segment")
+        try require(byPath["session/session.json"]?.contains("\"goal\" : \"Understand the Open Agents repo\"") == true, "expected session json payload")
+        try require(byPath["session/session.json"]?.contains("github.com") == true, "expected observed GitHub host in session json")
+        try require(byPath["session/session.json"]?.contains("openai-agents-python") == true, "expected observed repo path in session json")
+        try require(byPath["session/writing-guidance.md"]?.contains("This never became coding") == true, "expected writing guidance file to include learned anti-pattern")
+    }
+
+    static func testReviewWorkflowParsesStructuredEntitiesAndLinks() throws {
+        let context = makeReviewWorkflowContext()
+        let provider = AIProviderBridge.codex
+        let output = """
+        {
+          "headline": "GitHub repo reading",
+          "summary": "GitHub held about 80% of the block around the OpenAI agents repo. Telegram only broke it briefly late.",
+          "insight": "Close Telegram and return to the GitHub repo thread.",
+          "entities": [
+            {
+              "label": "GitHub",
+              "kind": "site",
+              "referenceID": "github",
+              "url": "https://github.com/openai/openai-agents-python"
+            },
+            {
+              "label": "Telegram",
+              "kind": "app"
+            }
+          ],
+          "links": [
+            {
+              "title": "openai-agents-python",
+              "url": "https://github.com/openai/openai-agents-python"
+            }
+          ]
+        }
+        """
+
+        let review = try provider.parseSessionReview(
+            from: output,
+            title: "Understand the Open Agents repo",
+            personName: "Aayush",
+            startedAt: context.startedAt,
+            endedAt: context.endedAt,
+            events: context.events,
+            segments: context.segments
+        )
+
+        try require(review.headline == "GitHub repo reading", "expected headline to parse")
+        try require(review.reviewEntities.count == 2, "expected two structured review entities")
+        try require(review.reviewEntities.contains(where: { $0.label == "GitHub" && $0.kind == .site }), "expected GitHub entity")
+        try require(review.reviewEntities.contains(where: { $0.label == "Telegram" && $0.kind == .app }), "expected Telegram entity")
+        try require(review.links.count == 1, "expected one validated review link")
+        try require(review.links.first?.url == "https://github.com/openai/openai-agents-python", "expected GitHub link to survive validation")
+        try require(review.referenceURL == "https://github.com/openai/openai-agents-python", "expected first link to become reference URL")
+    }
+
+    static func testReviewWorkflowRejectsRawURLsInProse() throws {
+        let context = makeReviewWorkflowContext()
+        let provider = AIProviderBridge.codex
+        let output = """
+        {
+          "headline": "This stayed on GitHub",
+          "summary": "GitHub held most of the block at https://github.com/openai/openai-agents-python.",
+          "insight": "Return to GitHub.",
+          "entities": [],
+          "links": []
+        }
+        """
+
+        do {
+            _ = try provider.parseSessionReview(
+                from: output,
+                title: "Understand the Open Agents repo",
+                personName: "Aayush",
+                startedAt: context.startedAt,
+                endedAt: context.endedAt,
+                events: context.events,
+                segments: context.segments
+            )
+            throw SelfTestFailure(description: "expected parseSessionReview to reject raw URLs in prose")
+        } catch let error as ReviewGenerationError {
+            switch error {
+            case let .invalidReview(message):
+                try require(message.contains("raw URLs"), "expected URL validation error, got \(message)")
+            }
+        } catch {
+            throw error
+        }
+    }
+
+    static func testReviewWorkflowRepairsInvalidFirstDraft() throws {
+        let context = makeReviewWorkflowContext()
+        let provider = AIProviderBridge.codex
+        var prompts: [String] = []
+        var workspaceSnapshots: [[String: String]] = []
+
+        let run = try provider.generateSessionReviewWithRepairs(
+            providerTitle: "Codex CLI",
+            title: "Understand the Open Agents repo",
+            personName: "Aayush",
+            startedAt: context.startedAt,
+            endedAt: context.endedAt,
+            events: context.events,
+            segments: context.segments,
+            primaryPrompt: provider.sessionReviewPrompt(title: "Understand the Open Agents repo", personName: "Aayush"),
+            baseWorkspaceFiles: sessionReviewWorkspaceFiles(
+                title: "Understand the Open Agents repo",
+                personName: "Aayush",
+                contextPattern: nil,
+                reviewLearnings: [],
+                feedbackExamples: [],
+                startedAt: context.startedAt,
+                endedAt: context.endedAt,
+                events: context.events,
+                segments: context.segments
+            )
+        ) { prompt, workspaceFiles in
+            prompts.append(prompt)
+            workspaceSnapshots.append(Dictionary(uniqueKeysWithValues: workspaceFiles.map { ($0.relativePath, $0.content) }))
+
+            if prompts.count == 1 {
+                return ChatCLIRunResult(
+                    prompt: prompt,
+                    output: """
+                    {
+                      "headline": "GitHub repo reading",
+                      "summary": "GitHub held most of the block at https://github.com/openai/openai-agents-python.",
+                      "insight": "Close Telegram and return to GitHub.",
+                      "entities": [],
+                      "links": []
+                    }
+                    """,
+                    rawStdout: "",
+                    stderr: ""
+                )
+            }
+
+            return ChatCLIRunResult(
+                prompt: prompt,
+                output: """
+                {
+                  "headline": "GitHub repo reading",
+                  "summary": "GitHub held 12m of the block around openai-agents-python. Telegram only broke it briefly late.",
+                  "insight": "Close Telegram and return to the GitHub repo thread.",
+                  "entities": [
+                    {
+                      "label": "GitHub",
+                      "kind": "site",
+                      "referenceID": "github",
+                      "url": "https://github.com/openai/openai-agents-python"
+                    },
+                    {
+                      "label": "Telegram",
+                      "kind": "app",
+                      "referenceID": "telegram",
+                      "url": ""
+                    }
+                  ],
+                  "links": [
+                    {
+                      "title": "openai-agents-python",
+                      "url": "https://github.com/openai/openai-agents-python"
+                    }
+                  ]
+                }
+                """,
+                rawStdout: "",
+                stderr: ""
+            )
+        }
+
+        try require(prompts.count == 2, "expected one repair retry")
+        try require(prompts[1].contains("repair the review"), "expected repair prompt on second attempt")
+        try require(workspaceSnapshots.count == 2, "expected two workspace snapshots")
+        try require(workspaceSnapshots[1]["session/review-repair.md"]?.contains("raw URLs") == true, "expected repair guidance file")
+        try require(workspaceSnapshots[1]["session/previous-review.json"]?.contains("https://github.com/openai/openai-agents-python") == true, "expected prior invalid draft file")
+        try require(run.review.summary.contains("12m"), "expected repaired review to win")
+        try require(run.rawResponse.contains("Validation: The local model returned raw URLs instead of plain review text."), "expected trace to keep first validation failure")
+    }
+
+    static func testReviewWorkflowErrorsAfterRepeatedInvalidDrafts() throws {
+        let context = makeReviewWorkflowContext()
+        let provider = AIProviderBridge.codex
+        var attempts = 0
+
+        do {
+            _ = try provider.generateSessionReviewWithRepairs(
+                providerTitle: "Codex CLI",
+                title: "Understand the Open Agents repo",
+                personName: "Aayush",
+                startedAt: context.startedAt,
+                endedAt: context.endedAt,
+                events: context.events,
+                segments: context.segments,
+                primaryPrompt: provider.sessionReviewPrompt(title: "Understand the Open Agents repo", personName: "Aayush"),
+                baseWorkspaceFiles: sessionReviewWorkspaceFiles(
+                    title: "Understand the Open Agents repo",
+                    personName: "Aayush",
+                    contextPattern: nil,
+                    reviewLearnings: [],
+                    feedbackExamples: [],
+                    startedAt: context.startedAt,
+                    endedAt: context.endedAt,
+                    events: context.events,
+                    segments: context.segments
+                )
+            ) { prompt, _ in
+                attempts += 1
+                return ChatCLIRunResult(
+                    prompt: prompt,
+                    output: """
+                    {
+                      "headline": "GitHub repo reading",
+                      "summary": "GitHub held most of the block at https://github.com/openai/openai-agents-python.",
+                      "insight": "Return to GitHub.",
+                      "entities": [],
+                      "links": []
+                    }
+                    """,
+                    rawStdout: "",
+                    stderr: ""
+                )
+            }
+            throw SelfTestFailure(description: "expected repeated invalid drafts to throw after retries")
+        } catch let error as ExhaustedAIReviewGeneration {
+            try require(attempts == 4, "expected bounded retry count before failing")
+            try require(error.providerTitle == "Codex CLI", "expected provider title to survive")
+            try require(error.traces.count == 4, "expected four failed AI attempts")
+            try require(error.lastValidationError.contains("raw URLs"), "expected final validation reason")
+        }
+    }
+
+    private static func makeReviewWorkflowContext() -> (
+        startedAt: Date,
+        endedAt: Date,
+        events: [ActivityEvent],
+        segments: [TimelineSegment]
+    ) {
+        let startedAt = Date(timeIntervalSince1970: 1_715_000_000)
+        let gitHubURL = "https://github.com/openai/openai-agents-python"
+        let events = [
+            ActivityEvent(
+                occurredAt: startedAt,
+                source: .browser,
+                kind: .tabFocused,
+                appName: "Google Chrome",
+                bundleID: "com.google.Chrome",
+                resourceTitle: "openai/openai-agents-python",
+                resourceURL: gitHubURL,
+                domain: "github.com"
+            ),
+            ActivityEvent(
+                occurredAt: startedAt.addingTimeInterval(60),
+                source: .workspace,
+                kind: .appActivated,
+                appName: "Codex"
+            ),
+            ActivityEvent(
+                occurredAt: startedAt.addingTimeInterval(600),
+                source: .workspace,
+                kind: .appActivated,
+                appName: "Telegram",
+                bundleID: "ru.keepcoder.Telegram",
+                windowTitle: "Telegram"
+            ),
+        ]
+
+        let segments = [
+            TimelineSegment(
+                startAt: startedAt,
+                endAt: startedAt.addingTimeInterval(720),
+                appName: "Google Chrome",
+                primaryLabel: "GitHub",
+                secondaryLabel: "openai/openai-agents-python",
+                category: .coding,
+                repoName: "openai-agents-python",
+                url: gitHubURL,
+                domain: "github.com",
+                confidence: 0.95,
+                eventCount: 2
+            ),
+            TimelineSegment(
+                startAt: startedAt.addingTimeInterval(720),
+                endAt: startedAt.addingTimeInterval(780),
+                appName: "Telegram",
+                primaryLabel: "Telegram",
+                category: .communication,
+                confidence: 0.8,
+                eventCount: 1
+            ),
+        ]
+
+        return (
+            startedAt: startedAt,
+            endedAt: startedAt.addingTimeInterval(780),
+            events: events,
+            segments: segments
+        )
     }
 
     static func testReviewFeedbackOverwriteAndSnapshots() throws {

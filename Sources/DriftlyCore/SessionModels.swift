@@ -421,6 +421,7 @@ public struct SessionReview: Identifiable, Hashable, Codable {
     public let goalMatch: SessionGoalMatch
     public let headline: String
     public let summary: String
+    public let reviewEntities: [SessionReviewEntity]
     public let summarySpans: [SessionReviewInlineSpan]
     public let why: String
     public let interruptions: [String]
@@ -457,6 +458,7 @@ public struct SessionReview: Identifiable, Hashable, Codable {
         goalMatch: SessionGoalMatch = .unclear,
         headline: String,
         summary: String? = nil,
+        reviewEntities: [SessionReviewEntity] = [],
         summarySpans: [SessionReviewInlineSpan] = [],
         why: String,
         interruptions: [String] = [],
@@ -492,6 +494,7 @@ public struct SessionReview: Identifiable, Hashable, Codable {
         self.goalMatch = goalMatch
         self.headline = headline
         self.summary = summary ?? why
+        self.reviewEntities = reviewEntities
         self.summarySpans = summarySpans
         self.why = why
         self.interruptions = interruptions
@@ -529,6 +532,7 @@ public struct SessionReview: Identifiable, Hashable, Codable {
         case goalMatch
         case headline
         case summary
+        case reviewEntities
         case summarySpans
         case why
         case interruptions
@@ -567,6 +571,7 @@ public struct SessionReview: Identifiable, Hashable, Codable {
         verdict = try container.decodeIfPresent(SessionVerdict.self, forKey: .verdict) ?? SessionVerdict(goalMatch: goalMatch)
         headline = try container.decode(String.self, forKey: .headline)
         summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? (try container.decode(String.self, forKey: .why))
+        reviewEntities = try container.decodeIfPresent([SessionReviewEntity].self, forKey: .reviewEntities) ?? []
         summarySpans = try container.decodeIfPresent([SessionReviewInlineSpan].self, forKey: .summarySpans) ?? []
         why = try container.decode(String.self, forKey: .why)
         interruptions = try container.decodeIfPresent([String].self, forKey: .interruptions) ?? []
@@ -613,6 +618,7 @@ public struct SessionReview: Identifiable, Hashable, Codable {
         try container.encode(goalMatch, forKey: .goalMatch)
         try container.encode(headline, forKey: .headline)
         try container.encode(summary, forKey: .summary)
+        try container.encode(reviewEntities, forKey: .reviewEntities)
         try container.encode(summarySpans, forKey: .summarySpans)
         try container.encode(why, forKey: .why)
         try container.encode(interruptions, forKey: .interruptions)
@@ -638,6 +644,37 @@ public struct SessionReview: Identifiable, Hashable, Codable {
         try container.encode(confidenceNotes, forKey: .confidenceNotes)
         try container.encode(segments, forKey: .segments)
         try container.encode(attentionSegments, forKey: .attentionSegments)
+    }
+}
+
+public enum SessionReviewEntityKind: String, Hashable, Codable, CaseIterable {
+    case app
+    case site
+    case tool
+    case repo
+    case file
+    case unknown
+}
+
+public struct SessionReviewEntity: Identifiable, Hashable, Codable {
+    public let id: String
+    public let label: String
+    public let kind: SessionReviewEntityKind
+    public let referenceID: String?
+    public let url: String?
+
+    public init(
+        id: String = UUID().uuidString,
+        label: String,
+        kind: SessionReviewEntityKind,
+        referenceID: String? = nil,
+        url: String? = nil
+    ) {
+        self.id = id
+        self.label = label
+        self.kind = kind
+        self.referenceID = referenceID
+        self.url = url
     }
 }
 

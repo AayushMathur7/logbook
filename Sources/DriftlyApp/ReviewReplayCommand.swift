@@ -165,7 +165,7 @@ enum ReviewReplayCommand {
             warnings.append("summary still mentions a browser shell even though a site is already named")
         }
 
-        if summary.range(of: #"\b\d+%|\b\d+\s?(minute|minutes|second|seconds|m|s)\b"#, options: .regularExpression) == nil {
+        if summary.range(of: #"\b\d+%|\b\d+\s?(minute|minutes|second|seconds|switch|switches|times|m|s)\b"#, options: .regularExpression) == nil {
             warnings.append("summary is missing a concrete numeric fact")
         }
 

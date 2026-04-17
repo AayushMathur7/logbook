@@ -86,11 +86,12 @@ final class DriftlyAppController: NSObject, NSApplicationDelegate {
     private func installMainMenuIfNeeded() {
         guard NSApp.mainMenu == nil else { return }
 
-        let mainMenu = NSMenu()
+        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Driftly"
+        let mainMenu = NSMenu(title: appName)
 
         let appMenuItem = NSMenuItem()
-        let appMenu = NSMenu()
-        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Driftly"
+        appMenuItem.title = appName
+        let appMenu = NSMenu(title: appName)
 
         appMenu.addItem(
             withTitle: "Open \(appName)",
@@ -107,6 +108,7 @@ final class DriftlyAppController: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appMenuItem)
 
         let windowMenuItem = NSMenuItem()
+        windowMenuItem.title = "Window"
         let windowMenu = NSMenu(title: "Window")
         let showItem = NSMenuItem(
             title: "Show \(appName)",
@@ -151,7 +153,7 @@ final class DriftlyAppController: NSObject, NSApplicationDelegate {
 
     private func installStatusMenuIfNeeded() {
         guard statusMenu == nil else { return }
-        let menu = NSMenu()
+        let menu = NSMenu(title: "Driftly")
         statusMenu = menu
         statusItem?.menu = menu
     }
@@ -220,5 +222,19 @@ final class DriftlyAppController: NSObject, NSApplicationDelegate {
 
     @objc private func quitFromMenu(_ sender: Any?) {
         quitApp()
+    }
+}
+
+package enum DriftlyAppLauncher {
+    @MainActor
+    package static func run() {
+        if ReviewReplayCommand.shouldRun(arguments: CommandLine.arguments) {
+            ReviewReplayCommand.runAndExit(arguments: Array(CommandLine.arguments.dropFirst()))
+        }
+
+        let application = NSApplication.shared
+        let delegate = MainActor.assumeIsolated { DriftlyAppController() }
+        application.delegate = delegate
+        application.run()
     }
 }

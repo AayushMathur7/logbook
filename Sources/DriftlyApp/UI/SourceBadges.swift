@@ -271,6 +271,27 @@ enum SourceBadgeFactory {
         return nil
     }
 
+    static func badge(for entity: SessionReviewEntity) -> SourceBadgeModel {
+        let trimmedLabel = entity.label.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let referenceID = entity.referenceID,
+           let definition = ReviewEntityRegistry.definition(forReferenceID: referenceID) {
+            return badge(for: definition, label: trimmedLabel.isEmpty ? nil : trimmedLabel)
+        }
+
+        if let definition = ReviewEntityRegistry.definition(matchingValue: trimmedLabel) {
+            return badge(for: definition, label: trimmedLabel.isEmpty ? nil : trimmedLabel)
+        }
+
+        if let url = entity.url,
+           let definition = ReviewEntityRegistry.definition(forHost: url) {
+            return badge(for: definition, label: trimmedLabel.isEmpty ? nil : trimmedLabel)
+        }
+
+        let fallbackLabel = trimmedLabel.isEmpty ? "Surface" : trimmedLabel
+        return SourceBadgeModel(label: fallbackLabel, icon: fallbackIcon(for: entity.kind))
+    }
+
     private static func badge(for definition: ReviewEntityDefinition, label: String? = nil) -> SourceBadgeModel {
         SourceBadgeModel(label: label ?? definition.label, icon: icon(for: definition))
     }
@@ -311,6 +332,23 @@ enum SourceBadgeFactory {
         }
 
         return nil
+    }
+
+    private static func fallbackIcon(for kind: SessionReviewEntityKind) -> SourceBadgeIcon {
+        switch kind {
+        case .app:
+            return .system("app")
+        case .site:
+            return .system("globe")
+        case .tool:
+            return .system("terminal")
+        case .repo:
+            return .system("folder")
+        case .file:
+            return .system("doc.text")
+        case .unknown:
+            return .system("circle.dashed")
+        }
     }
 
     private static func badgeKey(for badge: SourceBadgeModel) -> String {

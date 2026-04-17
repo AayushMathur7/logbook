@@ -69,7 +69,9 @@ extension ContentView {
                 if !model.localReviewConfigured {
                     InlineButtonMessage(
                         actionTitle: "Set up local review",
-                        text: "so Driftly can write your recap after the block.",
+                        text: model.reviewProviderSelection == .codex
+                            ? "so Driftly can write your recap with the local ChatGPT-backed Codex login after the block."
+                            : "so Driftly can write your recap after the block.",
                         tint: DriftlyStyle.caution
                     ) {
                         model.requestSettingsSheet()

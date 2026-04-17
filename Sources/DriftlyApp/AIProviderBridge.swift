@@ -1,11 +1,24 @@
 import Foundation
 import DriftlyCore
 
-struct LocalReviewRun {
-    let providerTitle: String
-    let prompt: String
-    let rawResponse: String
-    let review: SessionReview
+package struct LocalReviewRun {
+    package let providerTitle: String
+    package let prompt: String
+    package let rawResponse: String
+    package let review: SessionReview
+}
+
+package struct ReviewAttemptTrace {
+    package let attemptNumber: Int
+    package let prompt: String
+    package let rawResponse: String
+    package let validationError: String?
+}
+
+package struct ExhaustedAIReviewGeneration: Error {
+    package let providerTitle: String
+    package let traces: [ReviewAttemptTrace]
+    package let lastValidationError: String
 }
 
 protocol LocalReviewProvider {
@@ -45,7 +58,7 @@ protocol LocalReviewProvider {
     ) async throws -> StoredPeriodicSummary
 }
 
-enum AIProviderBridge: LocalReviewProvider {
+package enum AIProviderBridge: LocalReviewProvider {
     case codex
     case claude
 
@@ -72,7 +85,7 @@ enum AIProviderBridge: LocalReviewProvider {
         segments: [TimelineSegment]
     ) async throws -> LocalReviewRun {
         let reviewSegments = filteredReviewSegments(from: segments)
-        let primaryPrompt = sessionReviewPrompt(
+        let baseWorkspaceFiles = sessionReviewWorkspaceFiles(
             title: title,
             personName: personName,
             contextPattern: contextPattern,
@@ -83,30 +96,194 @@ enum AIProviderBridge: LocalReviewProvider {
             events: events,
             segments: reviewSegments
         )
+        let primaryPrompt = sessionReviewPrompt(title: title, personName: personName)
 
-        let tool = chatCLITool
-        let run = try ChatCLIReviewRunner.runStructuredJSON(
-            tool: tool,
-            prompt: primaryPrompt,
-            schemaJSON: structuredOutputSchemaJSON(for: .sessionReview),
-            model: configuredCLIModel(from: settings.chatCLI),
-            timeoutSeconds: settings.chatCLI.timeoutSeconds,
-            insightWritingSkill: insightWritingSkill
-        )
-        let review = try parseSessionReview(
-            from: run.output,
+        do {
+            return try structuredSessionReviewRun(
+                tool: chatCLITool,
+                settings: settings,
+                title: title,
+                personName: personName,
+                insightWritingSkill: insightWritingSkill,
+                startedAt: startedAt,
+                endedAt: endedAt,
+                events: events,
+                segments: reviewSegments,
+                primaryPrompt: primaryPrompt,
+                baseWorkspaceFiles: baseWorkspaceFiles
+            )
+        } catch let primaryFailure as ExhaustedAIReviewGeneration {
+            guard let alternateProvider = alternateReviewProviderIfAvailable() else {
+                throw ReviewGenerationError.invalidReview(
+                    "\(primaryFailure.providerTitle) returned invalid reviews after \(primaryFailure.traces.count) attempts. Last error: \(primaryFailure.lastValidationError)"
+                )
+            }
+
+            do {
+                let alternateRun = try alternateProvider.structuredSessionReviewRun(
+                    tool: alternateProvider.chatCLITool,
+                    settings: settings,
+                    title: title,
+                    personName: personName,
+                    insightWritingSkill: insightWritingSkill,
+                    startedAt: startedAt,
+                    endedAt: endedAt,
+                    events: events,
+                    segments: reviewSegments,
+                    primaryPrompt: primaryPrompt,
+                    baseWorkspaceFiles: baseWorkspaceFiles
+                )
+
+                let primaryPromptTrace = combinedPromptTrace(
+                    from: primaryFailure.traces,
+                    providerTitle: primaryFailure.providerTitle
+                )
+                let primaryRawTrace = combinedRawResponseTrace(
+                    from: primaryFailure.traces,
+                    providerTitle: primaryFailure.providerTitle
+                )
+
+                return LocalReviewRun(
+                    providerTitle: alternateRun.providerTitle,
+                    prompt: [primaryPromptTrace, alternateRun.prompt]
+                        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                        .joined(separator: "\n\n"),
+                    rawResponse: [primaryRawTrace, alternateRun.rawResponse]
+                        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                        .joined(separator: "\n\n"),
+                    review: alternateRun.review
+                )
+            } catch let secondaryFailure as ExhaustedAIReviewGeneration {
+                throw ReviewGenerationError.invalidReview(
+                    "Both \(primaryFailure.providerTitle) and \(secondaryFailure.providerTitle) returned invalid reviews. Last error: \(secondaryFailure.lastValidationError)"
+                )
+            }
+        }
+    }
+
+    private func structuredSessionReviewRun(
+        tool: ChatCLITool,
+        settings: CaptureSettings,
+        title: String,
+        personName: String?,
+        insightWritingSkill: String?,
+        startedAt: Date,
+        endedAt: Date,
+        events: [ActivityEvent],
+        segments: [TimelineSegment],
+        primaryPrompt: String,
+        baseWorkspaceFiles: [ChatCLIWorkspaceFile]
+    ) throws -> LocalReviewRun {
+        try generateSessionReviewWithRepairs(
+            providerTitle: tool.displayName,
             title: title,
             personName: personName,
             startedAt: startedAt,
             endedAt: endedAt,
             events: events,
-            segments: reviewSegments
-        )
-        return LocalReviewRun(
-            providerTitle: tool.displayName,
-            prompt: run.prompt,
-            rawResponse: run.output,
-            review: review
+            segments: segments,
+            primaryPrompt: primaryPrompt,
+            baseWorkspaceFiles: baseWorkspaceFiles
+        ) { prompt, workspaceFiles in
+            try ChatCLIReviewRunner.runStructuredJSON(
+                tool: tool,
+                prompt: prompt,
+                schemaJSON: structuredOutputSchemaJSON(for: .sessionReview),
+                model: configuredCLIModel(from: settings.chatCLI),
+                timeoutSeconds: settings.chatCLI.timeoutSeconds,
+                insightWritingSkill: insightWritingSkill,
+                workspaceFiles: workspaceFiles
+            )
+        }
+    }
+
+    package func generateSessionReviewWithRepairs(
+        providerTitle: String,
+        title: String,
+        personName: String?,
+        startedAt: Date,
+        endedAt: Date,
+        events: [ActivityEvent],
+        segments: [TimelineSegment],
+        primaryPrompt: String,
+        baseWorkspaceFiles: [ChatCLIWorkspaceFile],
+        runner: (_ prompt: String, _ workspaceFiles: [ChatCLIWorkspaceFile]) throws -> ChatCLIRunResult
+    ) throws -> LocalReviewRun {
+        let maxAttempts = 4
+        var attemptTraces: [ReviewAttemptTrace] = []
+        var lastValidationError: String?
+
+        for attemptNumber in 1...maxAttempts {
+            let prompt: String
+            let workspaceFiles: [ChatCLIWorkspaceFile]
+
+            if attemptNumber == 1 {
+                prompt = primaryPrompt
+                workspaceFiles = baseWorkspaceFiles
+            } else {
+                let previousDraft = attemptTraces.last?.rawResponse ?? ""
+                let validationError = lastValidationError ?? "The last draft did not pass review validation."
+                prompt = sessionReviewRepairPrompt(
+                    title: title,
+                    personName: personName,
+                    failureReason: validationError,
+                    previousDraft: previousDraft
+                )
+                workspaceFiles = baseWorkspaceFiles + sessionReviewRepairWorkspaceFiles(
+                    failureReason: validationError,
+                    previousDraft: previousDraft
+                )
+            }
+
+            let run = try runner(prompt, workspaceFiles)
+
+            do {
+                let review = try parseSessionReview(
+                    from: run.output,
+                    title: title,
+                    personName: personName,
+                    startedAt: startedAt,
+                    endedAt: endedAt,
+                    events: events,
+                    segments: segments
+                )
+
+                attemptTraces.append(
+                    ReviewAttemptTrace(
+                        attemptNumber: attemptNumber,
+                        prompt: run.prompt,
+                        rawResponse: run.output,
+                        validationError: nil
+                    )
+                )
+
+                return LocalReviewRun(
+                    providerTitle: providerTitle,
+                    prompt: combinedPromptTrace(from: attemptTraces, providerTitle: providerTitle),
+                    rawResponse: combinedRawResponseTrace(from: attemptTraces, providerTitle: providerTitle),
+                    review: review
+                )
+            } catch let error as ReviewGenerationError {
+                let message = error.localizedDescription
+                lastValidationError = message
+                attemptTraces.append(
+                    ReviewAttemptTrace(
+                        attemptNumber: attemptNumber,
+                        prompt: run.prompt,
+                        rawResponse: run.output,
+                        validationError: message
+                    )
+                )
+                continue
+            }
+        }
+
+        let failureReason = lastValidationError?.trimmedOrFallback("Model review retries exhausted.")
+            ?? "Model review retries exhausted."
+        throw ExhaustedAIReviewGeneration(
+            providerTitle: providerTitle,
+            traces: attemptTraces,
+            lastValidationError: failureReason
         )
     }
 
@@ -197,6 +374,19 @@ enum AIProviderBridge: LocalReviewProvider {
         }
     }
 
+    private func alternateReviewProviderIfAvailable() -> AIProviderBridge? {
+        let candidate: AIProviderBridge
+        switch self {
+        case .codex:
+            candidate = .claude
+        case .claude:
+            candidate = .codex
+        }
+
+        let status = ChatCLIReviewRunner.detect(tool: candidate.chatCLITool)
+        return status.installed && status.authenticated ? candidate : nil
+    }
+
     private func configuredCLIModel(from configuration: ChatCLIConfiguration) -> String? {
         switch self {
         case .codex:
@@ -206,7 +396,7 @@ enum AIProviderBridge: LocalReviewProvider {
         }
     }
 
-    private func parseSessionReview(
+    package func parseSessionReview(
         from output: String,
         title: String,
         personName: String?,
@@ -219,6 +409,14 @@ enum AIProviderBridge: LocalReviewProvider {
         let headline = normalizedReviewParagraph(payload.headline)
         let body = normalizedReviewParagraph(payload.summary)
         let insight = normalizedReviewParagraph(payload.insight)
+        try validateSessionReviewText(
+            headline: headline,
+            summary: body,
+            insight: insight,
+            segments: segments
+        )
+        let reviewEntities = validatedReviewEntities(from: payload.entities, events: events, segments: segments)
+        let reviewLinks = validatedReviewLinks(from: payload.links, events: events, segments: segments)
         let observedSegments = TimelineDeriver.observeSegments(segments, goal: title)
         let observability = TimelineDeriver.summarizeObservedSegments(observedSegments)
 
@@ -245,6 +443,7 @@ enum AIProviderBridge: LocalReviewProvider {
             goalMatch: goalMatch,
             headline: headline,
             summary: body,
+            reviewEntities: reviewEntities,
             summarySpans: normalizedInlineTagSpacing(
                 inferredRichSpans(from: body, goal: title, segments: segments)
             ),
@@ -261,7 +460,7 @@ enum AIProviderBridge: LocalReviewProvider {
             },
             trace: [],
             evidence: .empty,
-            links: [],
+            links: reviewLinks,
             appDurations: [],
             appSwitchCount: 0,
             repoName: segments.compactMap(\.repoName).first,
@@ -273,7 +472,7 @@ enum AIProviderBridge: LocalReviewProvider {
             breakPointAtLabel: nil,
             breakPoint: nil,
             dominantThread: nil,
-            referenceURL: nil,
+            referenceURL: reviewLinks.first?.url,
             focusAssessment: insight,
             confidenceNotes: [],
             segments: segments,
@@ -281,230 +480,521 @@ enum AIProviderBridge: LocalReviewProvider {
         )
     }
 
-    private func sessionReviewPrompt(
-        title: String,
-        personName: String?,
-        contextPattern: ContextPatternSnapshot?,
-        reviewLearnings: [String],
-        feedbackExamples: [SessionReviewFeedbackExample],
-        startedAt: Date,
-        endedAt: Date,
-        events: [ActivityEvent],
-        segments: [TimelineSegment]
-    ) -> String {
-        let coreEvents = events.filter { !$0.kind.isFocusGuardSignal && !isReviewNoiseEvent($0) }
-        let allowedMentions = allowedEvidenceMentions(from: segments, events: coreEvents)
-        let factPack = sessionPromptFactPack(from: segments)
-        let reviewStats = sessionReviewStats(from: segments)
-        let promptTopApps = promptTopApps(from: coreEvents)
-        let evidence = SessionEvidenceSummary(
-            topApps: promptTopApps,
-            topTitles: topCounts((coreEvents.compactMap(\.windowTitle) + coreEvents.compactMap(\.resourceTitle)).map(cleanedTitleLabel), limit: 8),
-            topURLs: topCounts((coreEvents.compactMap(\.resourceURL) + coreEvents.compactMap(\.domain)).map(readableReviewLocationLabel), limit: 6),
-            topPaths: topCounts((coreEvents.compactMap(\.path) + coreEvents.compactMap(\.workingDirectory)), limit: 6),
-            commands: Array(coreEvents.compactMap(\.command).orderedUnique().prefix(8)),
-            clipboardPreviews: Array(coreEvents.compactMap(\.clipboardPreview).orderedUnique().prefix(3)),
-            quickNotes: Array(coreEvents.compactMap(\.noteText).orderedUnique().prefix(4)),
-            trace: []
-        )
-
-        let segmentLines = segments.prefix(12).map { segment in
-            let interval = ActivityFormatting.sessionTime.string(from: segment.startAt, to: segment.endAt)
-            let descriptor = [segment.appName, segment.primaryLabel, segment.secondaryLabel].compactMap { $0 }.joined(separator: " · ")
-            let details = [
-                segment.repoName,
-                segment.filePath,
-                segment.domain,
-            ].compactMap { $0 }.joined(separator: " | ")
-            return "- \(interval): \(descriptor)\(details.isEmpty ? "" : " [\(details)]")"
-        }.joined(separator: "\n")
+    package func sessionReviewPrompt(title: String, personName: String?) -> String {
+        let nameInstruction: String
+        if let personName = personName?.trimmingCharacters(in: .whitespacesAndNewlines), !personName.isEmpty {
+            nameInstruction = "Never use the person's name in the output, even though it is \(personName)."
+        } else {
+            nameInstruction = "Never use the person's name in the output."
+        }
 
         return """
-        Write a sharp, human review of one desktop session from local evidence.
-        Your job is to judge whether the block stayed aligned with the goal, not to narrate raw app usage.
-
-        Return only one JSON object with exactly these keys:
-        - headline
-        - summary
-        - insight
-
-        Rules:
-        - Use second person.
-        - Never use the person's name.
-        - Address the person directly as "you" or "your".
-        - `headline` and `summary` must do different jobs.
-        - Headline under 10 words and no colon.
-        - `headline` must name what the block became, not just what app was open.
-        - Do not use a bare activity phrase like "Watching YouTube videos" or "Using Chrome" as the headline.
-        - Prefer calm judgment phrases like "This block shifted into...", "This session became...", "This stayed on...", or "This never really became..."
-        - Write the headline the way a sharp human would actually say it out loud.
-        - Prefer concrete, everyday wording like "repo work", "feed checking", "setup thrash", "tab hopping", "spec reading", or "video rabbit hole".
-        - Avoid abstract or consultant-style nouns like "alignment", "orientation", "fragmentation", "coherence", "optimization", "reconnaissance", "exploration", or "context switching".
-        - Do not turn the headline into a category label, framework label, or productivity diagnosis.
-        - Do not use blamey or robotic phrases like "you got pulled into", "X took this block", "accounted for", or "you spent the session".
-        - `summary` should usually be exactly two short sentences and stay under 50 words total.
-        - Sentence 1 should say what mostly happened.
-        - Sentence 2 should say what weakened it, or what still held if it mostly stayed on task.
-        - `summary` must explain the session shape, not just restate timing facts.
-        - `summary` must add concrete evidence that is not already stated in the headline.
-        - `summary` must include:
-          1. the dominant surface or app
-          2. at least one numeric fact from the computed facts below
-          3. one concrete title, page, or surface when available
-          4. the work surface that lost, when it is visible
-        - Driftly only sees local desktop evidence like apps, titles, domains, repos, files, commands, notes, clipboard previews, and switches.
-        - Do not imply deeper intent, completion, or understanding unless the visible evidence really supports it.
-        - If the evidence contains the old product names LogBook or Log Book, rewrite them as Driftly.
-        - Treat app names as evidence, not as the answer.
-        - Judge the session against the goal first. A browser, Codex, Cursor, YouTube, or X can all be on-goal if the visible work supports the goal.
-        - Do not restate the headline with light paraphrasing.
-        - `summary` renders directly in the UI. Do not output XML, HTML, app tags, link tags, code fences, JSON inside strings, or raw URLs.
-        - Plain markdown is allowed, but use it lightly.
-        - If the evidence supports it, include the dominant time split in compact notation like `9m`, `30s`, or `62%`.
-        - If the dominant app or site is clear, name it plainly in the sentence.
-        - If a specific video, page, or document title is visible in the evidence, include it plainly and wrap it in straight double quotes.
-        - If the title is a random distracting YouTube or social post title, prefer the feed or content type over the full title.
-        - If the title is generic, missing, or redacted, do not guess.
-        - If the same block includes both browser-shell facts and site facts, trust the site facts and ignore the browser shell.
-        - Keep each sentence plain and direct. No semicolons, no em dashes, and no stacked clause chains.
-        - Prefer one useful title or surface over a long list of apps.
-        - Do not sound like a dashboard, analyst, or therapist.
-        - Bad summary wording: "led with", "was dominant across", "surfaced for", "fragmented across", "accounted for", "remained the dominant surface".
-        - Bad summary wording: "dominated your time block", "consumed your focus time", "your desktop activity didn't align", "watched YouTube videos and used Codex".
-        - `insight` must be exactly one sentence and under 18 words.
-        - `insight` must be one calm next move or framing correction, not a scolding command.
-        - `insight` must be actionable right away, not just observational.
-        - `insight` should usually start with the concrete action, not a preface.
-        - Do not start `insight` with phrases like "Next block", "This time", "Try to", "Aim to", or "Going forward".
-        - Prefer a stop-and-replace rule or a reframing rule: stop one behavior and name the next surface or framing to use instead.
-        - If the block drifted to YouTube, X, passive media, or unrelated browsing, `insight` should say what to cut or close next.
-        - If the block partly matched the goal, `insight` should say what to keep and what to remove.
-        - `insight` must move toward the stated goal, not deeper into the distraction.
-        - Never tell the person to continue scrolling, watching, or browsing a distraction surface unless the goal explicitly asked for that same surface.
-        - For vague goals, default the replacement action toward planning, coding, writing, or the visible work tool, not the distraction.
-        - Good insight: "If Codex is the real task, name the next block around it."
-        - Good insight: "Close YouTube and return to the repo thread in Codex."
-        - Good insight: "Keep the research, but cut the feed hopping."
-        - Good insight: "Restart this as a Codex block if that is the real work."
-        - Good insight: "Close Telegram, skip Zoom, and do one Open Agents pass in Codex."
-        - Bad insight: "Complete the X feed review first."
-        - Bad insight: "Close YouTube before the next block."
-        - Bad insight: "Next block, close Telegram and give the Open Agents repo one unbroken stretch in Codex."
-        - Bad insight: "Maintain focus on your primary tasks."
-        - Bad insight: "Refocus on the task in Codex."
-        - Bad insight: "Return to your main goal."
-        - Use short, plain English.
-        - Mention only concrete things that appear in the evidence.
-        - Mention at least one concrete app, site, or tool from the evidence in `summary` when one is available.
-        - Prefer the most specific surface available: named page, feed, document, or video title first; then site; then app shell.
-        - If a browser site like YouTube or X already explains the block, do not mention Chrome or Safari in the summary.
-        - Mention Chrome or Safari only when no site, feed, page, or video label is available.
-        - Avoid raw domain spellings like youtube.com or x.com in the answer. Use plain product names instead.
-        - Prior pattern memory is soft context only. Use it to judge what is normal for this user, but never let it override the current-session facts.
-        - `insight` must act on the same dominant distraction or winning surface already named in the headline or summary.
-        - Do not introduce a new app or site in `insight` unless it clearly consumed more time than the named distraction.
-        - Good `summary` example: "Codex held about 9 minutes, but Telegram and Zoom kept breaking the thread."
-        - Good `summary` example: "Most of the block stayed on YouTube, mainly Taylor Swift interview clips. Codex only showed up in short checks."
-        - Good `summary` example: "Most of the block stayed on YouTube, mainly Taylor Swift interview clips, while Codex only appeared briefly for about a minute."
-        - Good `summary` example: "X held about 68% of the block, mostly on the Home feed, while Codex only showed up in short checks."
-        - Bad `summary` example: "You spent the session primarily browsing social media."
-        - Bad `summary` example: "The session involved content on several surfaces."
-        - Bad `summary` example: "Codex led with about 9 minutes, 30% of the block, around Open Agents and related pages."
-        - Bad `summary` example: "You stayed partly aligned while the block became fragmented repo orientation."
-        - Keep `insight` plain text.
-        - Do not output badges, extra keys, XML, code fences, or commentary outside the JSON object.
-        - Do not mention instructions, examples, feedback machinery, scores, or hidden reasoning.
-        - Judge the block against the stated goal, not generic productivity.
-        - Do not classify by app name alone. A browser, YouTube, X, or Codex can be on-goal if the visited content supports the goal.
-        - Treat the computed facts below as source of truth for timing, ordering, and dominance.
-        - Use the goal plus the specific surfaces, titles, pages, and timing facts to decide what actually dominated the session.
-        - If the goal is broad, describe the dominant thread instead of overselling success.
-        - Never imply one app performed an action that happened on another site or surface.
-        - If YouTube and Codex both appear, say which one dominated and how long each held the session.
-        - If Driftly only appears as a quick app switch or review surface, keep it secondary.
-        - If the session changed shape but still looks useful, say that plainly instead of forcing a distraction narrative.
-        - If the evidence is mixed, say that plainly instead of pretending certainty.
-        - Do not say "you spent the session", "accounted for", "main goal", "returning to your main goal", or "refocus on".
-        - Never say "desktop activity", "during this time period", "desired focus work", "stated goal", or "lack of concentration".
-        - Never say "fragmented repo orientation", "fragmented reconnaissance", "aligned exploration", "context switching spiral", or similar abstract rewrites.
-        - Never say "dominated your time block", "consumed your focus time", "partially matched the building goal", or "watched YouTube videos and used Codex".
-        - Bad headline: "Watching YouTube videos"
-        - Good headline: "This block shifted into YouTube"
-        - Bad headline: "Session summary"
-        - Good headline: "This session became feed checking"
-        - Good headline: "This block stayed on the repo"
-        - Good headline: "This became repo hopping"
-        - Good headline: "This never really became repo study"
-        - Good headline: "This mostly stayed on setup"
-        - Bad headline: "This became fragmented repo orientation"
-        - Bad headline: "This became aligned research exploration"
-        - Bad headline: "This became productivity optimization"
-        - Bad headline: "You got pulled into YouTube Shorts"
-        - Bad headline: "X dominated your time block"
+        Read the session packet in `session/` and write one Driftly review for this block.
 
         Goal: \(title)
-        Time: \(ActivityFormatting.shortTime.string(from: startedAt)) to \(ActivityFormatting.shortTime.string(from: endedAt))
 
-        Legacy naming:
-        - LogBook = Driftly
-        - Log Book = Driftly
+        Read these files before answering:
+        - `session/goal.txt`
+        - `session/session-facts.md`
+        - `session/timeline.md`
+        - `session/session.json`
+        - `session/writing-guidance.md`
 
-        Prior pattern memory from recent sessions:
-        - Prior sessions considered: \(contextPattern?.sessionCount ?? 0)
-        - Typical aligned surfaces:
-        \(contextPattern?.alignedSurfaces.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
-        - Typical drift surfaces:
-        \(contextPattern?.driftSurfaces.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
-        - Common switches:
-        \(contextPattern?.commonTransitions.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+        Task:
+        - Judge the block against the goal.
+        - Use only visible evidence from the session files.
+        - Use `session/writing-guidance.md` only to sharpen wording. Current session evidence wins.
+        - If the files disagree, trust `session/session.json` for exact labels and timings.
+        - Return only the JSON object that matches the provided schema.
+        - Make `headline` name the actual thread, surface, or drift. Do not start it with "This stayed" or "This never".
+        - Use `entities` for the surfaces or tools that deserve pills in the UI.
+        - Use `links` only for observed URLs worth showing below the review.
+        - Use named sites, repos, files, or tools instead of generic phrases like browser activity or file activity.
+        - Keep browser profile noise like Default, WebStorage, or profile churn out of the prose and entities.
+        - Include one compact numeric fact in the summary.
+        - Make `insight` one immediate next move on an observed surface.
+        - Do not use markdown code ticks in the insight.
+        - \(nameInstruction)
+        """
+    }
 
-        Earlier feedback hints:
-        \(reviewLearnings.isEmpty ? "- none" : reviewLearnings.prefix(4).map { "- \($0)" }.joined(separator: "\n"))
+    private func sessionReviewRepairPrompt(
+        title: String,
+        personName: String?,
+        failureReason: String,
+        previousDraft: String
+    ) -> String {
+        let nameInstruction: String
+        if let personName = personName?.trimmingCharacters(in: .whitespacesAndNewlines), !personName.isEmpty {
+            nameInstruction = "Never use the person's name in the output, even though it is \(personName)."
+        } else {
+            nameInstruction = "Never use the person's name in the output."
+        }
 
-        Session facts:
-        - Total session length: \(naturalDurationLabel(for: reviewStats.totalSeconds))
-        - Surface switches: \(reviewStats.switchCount)
-        - Unique surfaces: \(reviewStats.uniqueSurfaceCount)
-        - Dominant surface: \(reviewStats.dominantSurface ?? "none")
-        - Dominant surface share: \(reviewStats.dominantSurfaceShare)
-        - Longest continuous run: \(reviewStats.longestRunLabel ?? "none")
-        - Top surfaces:
-        \(reviewStats.topSurfaces.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
-        - Top apps:
-        \(reviewStats.topApps.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
-        - Top page titles:
-        \(reviewStats.topTitles.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
-        - Opening sequence:
-        \(reviewStats.openingSequence.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
-        - Closing sequence:
-        \(reviewStats.closingSequence.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+        let repairRules = sessionReviewRepairRules(for: failureReason)
+            .map { "- \($0)" }
+            .joined(separator: "\n")
 
-        Visible media:
-        \(factPack.visibleMedia.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+        return """
+        Read the same session packet in `session/` and repair the review.
 
-        Visible sites:
-        \(factPack.visibleSites.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+        Goal: \(title)
 
-        Brief interruptions:
-        \(factPack.briefInterruptions.map { "- \($0)" }.joined(separator: "\n").nilIfBlank ?? "- none")
+        Read these files before answering:
+        - `session/goal.txt`
+        - `session/session-facts.md`
+        - `session/timeline.md`
+        - `session/session.json`
+        - `session/writing-guidance.md`
+        - `session/review-repair.md`
+        - `session/previous-review.json`
 
-        Allowed mentions:
-        \(allowedMentions.isEmpty ? "- none" : allowedMentions.map { "- \($0)" }.joined(separator: "\n"))
+        The previous draft failed Driftly validation for this exact reason:
+        \(failureReason)
 
-        Recent timeline:
-        \(segmentLines.isEmpty ? "- none" : segmentLines)
+        Repair rules:
+        \(repairRules)
 
-        Evidence:
-        - Apps: \(evidence.topApps.joined(separator: ", ").nilIfBlank ?? "none")
-        - Titles: \(evidence.topTitles.joined(separator: " | ").nilIfBlank ?? "none")
-        - URLs or domains: \(evidence.topURLs.joined(separator: " | ").nilIfBlank ?? "none")
-        - Paths: \(evidence.topPaths.joined(separator: " | ").nilIfBlank ?? "none")
-        - Commands: \(evidence.commands.joined(separator: " | ").nilIfBlank ?? "none")
-        - Clipboard: \(evidence.clipboardPreviews.joined(separator: " | ").nilIfBlank ?? "none")
-        - Notes: \(evidence.quickNotes.joined(separator: " | ").nilIfBlank ?? "none")
+        Task:
+        - Rewrite the whole review from scratch using only visible evidence from the session files.
+        - Use `session/writing-guidance.md` only to sharpen wording. Current session evidence wins.
+        - Make `headline` name the actual thread, surface, or drift. Do not start it with "This stayed" or "This never".
+        - Keep one compact numeric fact in the summary.
+        - Keep URLs in `links`, not in prose.
+        - Return only the JSON object that matches the provided schema.
+        - \(nameInstruction)
+
+        Previous invalid draft:
+        \(previousDraft)
         """
     }
 }
+
+private struct SessionReviewWorkspacePacket: Encodable {
+    struct ContextPattern: Encodable {
+        let sessionCount: Int
+        let alignedSurfaces: [String]
+        let driftSurfaces: [String]
+        let commonTransitions: [String]
+    }
+
+    struct ReviewStats: Encodable {
+        let totalSeconds: Int
+        let switchCount: Int
+        let uniqueSurfaceCount: Int
+        let dominantSurface: String?
+        let dominantSurfaceShare: String
+        let longestRunLabel: String?
+        let topSurfaces: [String]
+        let topApps: [String]
+        let topTitles: [String]
+        let openingSequence: [String]
+        let closingSequence: [String]
+    }
+
+    struct FactPack: Encodable {
+        let frontmostBreakdown: [String]
+        let visibleMedia: [String]
+        let visibleSites: [String]
+        let briefInterruptions: [String]
+        let backgroundContext: [String]
+    }
+
+    struct Segment: Encodable {
+        let startAt: String
+        let endAt: String
+        let appName: String
+        let primaryLabel: String
+        let secondaryLabel: String?
+        let repoName: String?
+        let filePath: String?
+        let url: String?
+        let domain: String?
+        let category: String
+        let eventCount: Int
+    }
+
+    let goal: String
+    let startedAt: String
+    let endedAt: String
+    let durationSeconds: Int
+    let contextPattern: ContextPattern?
+    let stats: ReviewStats
+    let factPack: FactPack
+    let evidence: SessionEvidenceSummary
+    let allowedMentions: [String]
+    let segments: [Segment]
+}
+
+package func sessionReviewWorkspaceFiles(
+    title: String,
+    personName: String?,
+    contextPattern: ContextPatternSnapshot?,
+    reviewLearnings: [String],
+    feedbackExamples: [SessionReviewFeedbackExample],
+    startedAt: Date,
+    endedAt: Date,
+    events: [ActivityEvent],
+    segments: [TimelineSegment]
+) -> [ChatCLIWorkspaceFile] {
+    let coreEvents = events.filter { !$0.kind.isFocusGuardSignal && !isReviewNoiseEvent($0) }
+    let allowedMentions = allowedEvidenceMentions(from: segments, events: coreEvents)
+    let factPack = sessionPromptFactPack(from: segments)
+    let reviewStats = sessionReviewStats(from: segments)
+    let evidence = SessionEvidenceSummary(
+        topApps: promptTopApps(from: coreEvents),
+        topTitles: topCounts((coreEvents.compactMap(\.windowTitle) + coreEvents.compactMap(\.resourceTitle)).map(cleanedTitleLabel), limit: 8),
+        topURLs: topCounts((coreEvents.compactMap(\.resourceURL) + coreEvents.compactMap(\.domain)).map(readableReviewLocationLabel), limit: 6),
+        topPaths: topCounts((coreEvents.compactMap(\.path) + coreEvents.compactMap(\.workingDirectory)), limit: 6),
+        commands: Array(coreEvents.compactMap(\.command).orderedUnique().prefix(8)),
+        clipboardPreviews: Array(coreEvents.compactMap(\.clipboardPreview).orderedUnique().prefix(3)),
+        quickNotes: Array(coreEvents.compactMap(\.noteText).orderedUnique().prefix(4)),
+        trace: []
+    )
+
+    _ = reviewLearnings
+    _ = feedbackExamples
+
+    let packet = SessionReviewWorkspacePacket(
+        goal: title,
+        startedAt: sessionPacketISO8601.string(from: startedAt),
+        endedAt: sessionPacketISO8601.string(from: endedAt),
+        durationSeconds: max(Int(endedAt.timeIntervalSince(startedAt).rounded()), 0),
+        contextPattern: contextPattern.map {
+            SessionReviewWorkspacePacket.ContextPattern(
+                sessionCount: $0.sessionCount,
+                alignedSurfaces: $0.alignedSurfaces,
+                driftSurfaces: $0.driftSurfaces,
+                commonTransitions: $0.commonTransitions
+            )
+        },
+        stats: SessionReviewWorkspacePacket.ReviewStats(
+            totalSeconds: reviewStats.totalSeconds,
+            switchCount: reviewStats.switchCount,
+            uniqueSurfaceCount: reviewStats.uniqueSurfaceCount,
+            dominantSurface: reviewStats.dominantSurface,
+            dominantSurfaceShare: reviewStats.dominantSurfaceShare,
+            longestRunLabel: reviewStats.longestRunLabel,
+            topSurfaces: reviewStats.topSurfaces,
+            topApps: reviewStats.topApps,
+            topTitles: reviewStats.topTitles,
+            openingSequence: reviewStats.openingSequence,
+            closingSequence: reviewStats.closingSequence
+        ),
+        factPack: SessionReviewWorkspacePacket.FactPack(
+            frontmostBreakdown: factPack.frontmostBreakdown,
+            visibleMedia: factPack.visibleMedia,
+            visibleSites: factPack.visibleSites,
+            briefInterruptions: factPack.briefInterruptions,
+            backgroundContext: factPack.backgroundContext
+        ),
+        evidence: evidence,
+        allowedMentions: allowedMentions,
+        segments: segments.map { segment in
+            SessionReviewWorkspacePacket.Segment(
+                startAt: sessionPacketISO8601.string(from: segment.startAt),
+                endAt: sessionPacketISO8601.string(from: segment.endAt),
+                appName: segment.appName,
+                primaryLabel: segment.primaryLabel,
+                secondaryLabel: segment.secondaryLabel,
+                repoName: segment.repoName,
+                filePath: segment.filePath,
+                url: segment.url,
+                domain: segment.domain,
+                category: segment.category.rawValue,
+                eventCount: segment.eventCount
+            )
+        }
+    )
+
+    return [
+        ChatCLIWorkspaceFile(
+            relativePath: "session/goal.txt",
+            content: sessionGoalFileContents(
+                title: title,
+                personName: personName,
+                startedAt: startedAt,
+                endedAt: endedAt
+            )
+        ),
+        ChatCLIWorkspaceFile(
+            relativePath: "session/session-facts.md",
+            content: sessionFactsMarkdown(
+                title: title,
+                startedAt: startedAt,
+                endedAt: endedAt,
+                contextPattern: contextPattern,
+                reviewStats: reviewStats,
+                factPack: factPack,
+                evidence: evidence,
+                allowedMentions: allowedMentions
+            )
+        ),
+        ChatCLIWorkspaceFile(
+            relativePath: "session/timeline.md",
+            content: sessionTimelineMarkdown(segments: segments)
+        ),
+        ChatCLIWorkspaceFile(
+            relativePath: "session/session.json",
+            content: sessionPacketJSON(from: packet)
+        ),
+        ChatCLIWorkspaceFile(
+            relativePath: "session/writing-guidance.md",
+            content: sessionWritingGuidanceMarkdown(
+                reviewLearnings: reviewLearnings,
+                feedbackExamples: feedbackExamples
+            )
+        )
+    ]
+}
+
+private func sessionReviewRepairWorkspaceFiles(
+    failureReason: String,
+    previousDraft: String
+) -> [ChatCLIWorkspaceFile] {
+    let repairRules = sessionReviewRepairRules(for: failureReason)
+        .map { "- \($0)" }
+        .joined(separator: "\n")
+
+    return [
+        ChatCLIWorkspaceFile(
+            relativePath: "session/review-repair.md",
+            content: """
+            # Review Repair
+
+            Failure reason:
+            - \(failureReason)
+
+            Repair rules:
+            \(repairRules)
+            """
+        ),
+        ChatCLIWorkspaceFile(
+            relativePath: "session/previous-review.json",
+            content: previousDraft
+        ),
+    ]
+}
+
+private func sessionReviewRepairRules(for failureReason: String) -> [String] {
+    let lowercased = failureReason.lowercased()
+    var rules = [
+        "Name the actual surface that mattered instead of generic activity labels.",
+        "Keep the summary to one useful number and two short sentences at most.",
+        "Make the insight an immediate action on an observed surface.",
+    ]
+
+    if lowercased.contains("valid json") {
+        rules.append("Return exactly one JSON object and no extra text.")
+    }
+    if lowercased.contains("file activity") {
+        rules.append("Do not say file activity. Name the actual repo, file, site, or tool instead.")
+    }
+    if lowercased.contains("browser shell") {
+        rules.append("Do not mention Chrome or Safari when a visible site like Zoom or GitHub explains the block.")
+    }
+    if lowercased.contains("generic insight") || lowercased.contains("formulaic insight") {
+        rules.append("Use a stop-and-replace move like close X and return to Y.")
+    }
+    if lowercased.contains("generic coding-work headline") {
+        rules.append("Do not start the headline with This stayed or This never. Name the actual thread or drift instead.")
+    }
+    if lowercased.contains("headline") {
+        rules.append("Headline should name what the block became, not a generic productivity judgment.")
+    }
+    if lowercased.contains("raw url") {
+        rules.append("Keep raw URLs out of headline, summary, and insight.")
+    }
+    if lowercased.contains("markup") || lowercased.contains("code ticks") {
+        rules.append("Use plain text only inside headline, summary, and insight.")
+    }
+
+    return rules
+}
+
+private func combinedPromptTrace(from attempts: [ReviewAttemptTrace], providerTitle: String) -> String {
+    guard attempts.count > 1 else { return attempts.first?.prompt ?? "" }
+
+    return attempts.map { attempt in
+        """
+        === \(providerTitle) Attempt \(attempt.attemptNumber) Prompt ===
+        \(attempt.prompt)
+        """
+    }.joined(separator: "\n\n")
+}
+
+private func combinedRawResponseTrace(from attempts: [ReviewAttemptTrace], providerTitle: String) -> String {
+    guard attempts.count > 1 else { return attempts.first?.rawResponse ?? "" }
+
+    return attempts.map { attempt in
+        let resultLine = attempt.validationError.map { "Validation: \($0)" } ?? "Validation: passed"
+        return """
+        === \(providerTitle) Attempt \(attempt.attemptNumber) Output ===
+        \(attempt.rawResponse)
+
+        \(resultLine)
+        """
+    }.joined(separator: "\n\n")
+}
+
+private func sessionGoalFileContents(
+    title: String,
+    personName: String?,
+    startedAt: Date,
+    endedAt: Date
+) -> String {
+    let nameLine: String
+    if let personName = personName?.trimmingCharacters(in: .whitespacesAndNewlines), !personName.isEmpty {
+        nameLine = "Person name: \(personName)\nUse second person in the review and never use their name.\n"
+    } else {
+        nameLine = "Use second person in the review.\n"
+    }
+
+    return """
+    Goal: \(title)
+    Started: \(ActivityFormatting.shortTime.string(from: startedAt))
+    Ended: \(ActivityFormatting.shortTime.string(from: endedAt))
+    \(nameLine)Judge the block against the goal using only visible evidence from this session packet.
+    """
+}
+
+private func sessionFactsMarkdown(
+    title: String,
+    startedAt: Date,
+    endedAt: Date,
+    contextPattern: ContextPatternSnapshot?,
+    reviewStats: SessionReviewStats,
+    factPack: SessionPromptFactPack,
+    evidence: SessionEvidenceSummary,
+    allowedMentions: [String]
+) -> String {
+    """
+    # Session Facts
+
+    - Goal: \(title)
+    - Time: \(ActivityFormatting.shortTime.string(from: startedAt)) to \(ActivityFormatting.shortTime.string(from: endedAt))
+    - Captured length: \(naturalDurationLabel(for: reviewStats.totalSeconds))
+
+    ## Computed stats
+
+    - Surface switches: \(reviewStats.switchCount)
+    - Unique surfaces: \(reviewStats.uniqueSurfaceCount)
+    - Dominant surface: \(reviewStats.dominantSurface ?? "none")
+    - Dominant surface share: \(reviewStats.dominantSurfaceShare)
+    - Longest run: \(reviewStats.longestRunLabel ?? "none")
+
+    ## Top surfaces
+
+    \(markdownBullets(reviewStats.topSurfaces))
+
+    ## Top apps
+
+    \(markdownBullets(reviewStats.topApps))
+
+    ## Top titles
+
+    \(markdownBullets(reviewStats.topTitles))
+
+    ## Opening sequence
+
+    \(markdownBullets(reviewStats.openingSequence))
+
+    ## Closing sequence
+
+    \(markdownBullets(reviewStats.closingSequence))
+
+    ## Visible media
+
+    \(markdownBullets(factPack.visibleMedia))
+
+    ## Visible sites
+
+    \(markdownBullets(factPack.visibleSites))
+
+    ## Brief interruptions
+
+    \(markdownBullets(factPack.briefInterruptions))
+
+    ## Background context
+
+    \(markdownBullets(factPack.backgroundContext))
+
+    ## Context pattern
+
+    - Prior sessions considered: \(contextPattern?.sessionCount ?? 0)
+    - Typical aligned surfaces:
+    \(nestedMarkdownBullets(contextPattern?.alignedSurfaces ?? []))
+    - Typical drift surfaces:
+    \(nestedMarkdownBullets(contextPattern?.driftSurfaces ?? []))
+    - Common switches:
+    \(nestedMarkdownBullets(contextPattern?.commonTransitions ?? []))
+
+    ## Evidence
+
+    - Apps:
+    \(nestedMarkdownBullets(evidence.topApps))
+    - Titles:
+    \(nestedMarkdownBullets(evidence.topTitles))
+    - URLs or domains:
+    \(nestedMarkdownBullets(evidence.topURLs))
+    - Paths:
+    \(nestedMarkdownBullets(evidence.topPaths))
+    - Commands:
+    \(nestedMarkdownBullets(evidence.commands))
+    - Clipboard previews:
+    \(nestedMarkdownBullets(evidence.clipboardPreviews))
+    - Quick notes:
+    \(nestedMarkdownBullets(evidence.quickNotes))
+
+    ## Allowed mentions
+
+    \(markdownBullets(allowedMentions))
+    """
+}
+
+private func sessionTimelineMarkdown(segments: [TimelineSegment]) -> String {
+    let lines = segments.map { segment in
+        let interval = ActivityFormatting.sessionTime.string(from: segment.startAt, to: segment.endAt)
+        let descriptor = [segment.appName, segment.primaryLabel, segment.secondaryLabel].compactMap { value in
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }.joined(separator: " · ")
+        let details = [segment.repoName, segment.filePath, segment.domain].compactMap { value in
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }.joined(separator: " | ")
+        return "- \(interval): \(descriptor)\(details.isEmpty ? "" : " [\(details)]")"
+    }
+
+    return """
+    # Timeline
+
+    \(lines.isEmpty ? "- none" : lines.joined(separator: "\n"))
+    """
+}
+
+private func sessionPacketJSON(from packet: SessionReviewWorkspacePacket) -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = (try? encoder.encode(packet)) ?? Data("{}".utf8)
+    return String(decoding: data, as: UTF8.self)
+}
+
+private func markdownBullets(_ values: [String]) -> String {
+    let cleaned = values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    return cleaned.isEmpty ? "- none" : cleaned.map { "- \($0)" }.joined(separator: "\n")
+}
+
+private func nestedMarkdownBullets(_ values: [String]) -> String {
+    let cleaned = values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    return cleaned.isEmpty ? "  - none" : cleaned.map { "  - \($0)" }.joined(separator: "\n")
+}
+
+private let sessionPacketISO8601: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+}()
 
 private func periodicSummaryPrompt(
     kind: StoredPeriodicSummaryKind,
@@ -1080,10 +1570,10 @@ private func observedEntityLabel(for segment: TimelineSegment) -> String {
     return segment.appName
 }
 
-enum ReviewGenerationError: LocalizedError {
+package enum ReviewGenerationError: LocalizedError {
     case invalidReview(String)
 
-    var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case let .invalidReview(message):
             return message
@@ -1118,8 +1608,40 @@ private struct StructuredOutputSchema: Encodable {
                 type: .string,
                 description: "One calm, specific next move or reframing sentence that helps correct or continue the work."
             ),
+            "entities": StructuredOutputSchemaProperty(
+                type: .array,
+                description: "Up to 4 concrete surfaces, tools, sites, repos, or files that mattered enough to show as pills in the UI.",
+                items: StructuredOutputSchemaProperty(
+                    type: .object,
+                    properties: [
+                        "label": StructuredOutputSchemaProperty(type: .string, description: "Visible label for the entity."),
+                        "kind": StructuredOutputSchemaProperty(
+                            type: .string,
+                            description: "Entity category.",
+                            enumValues: ["app", "site", "tool", "repo", "file", "unknown"]
+                        ),
+                        "referenceID": StructuredOutputSchemaProperty(type: .string, description: "Known reference ID when the entity matches a known app or site."),
+                        "url": StructuredOutputSchemaProperty(type: .string, description: "Observed URL for the entity when one is available.")
+                    ],
+                    required: ["label", "kind", "referenceID", "url"],
+                    additionalProperties: false
+                )
+            ),
+            "links": StructuredOutputSchemaProperty(
+                type: .array,
+                description: "Up to 3 observed links worth showing below the review.",
+                items: StructuredOutputSchemaProperty(
+                    type: .object,
+                    properties: [
+                        "title": StructuredOutputSchemaProperty(type: .string, description: "Short label for the visited link."),
+                        "url": StructuredOutputSchemaProperty(type: .string, description: "Observed URL from the session evidence.")
+                    ],
+                    required: ["title", "url"],
+                    additionalProperties: false
+                )
+            ),
         ],
-        required: ["headline", "summary", "insight"],
+        required: ["headline", "summary", "insight", "entities", "links"],
         additionalProperties: false
     )
 
@@ -1199,12 +1721,28 @@ private struct StructuredSessionReviewPayload: Decodable {
     let headline: String
     let summary: String
     let insight: String
+    let entities: [StructuredSessionReviewEntityPayload]
+    let links: [StructuredSessionReviewLinkPayload]
 
     enum CodingKeys: String, CodingKey {
         case headline
         case summary
         case insight
+        case entities
+        case links
     }
+}
+
+private struct StructuredSessionReviewEntityPayload: Decodable {
+    let label: String
+    let kind: String
+    let referenceID: String?
+    let url: String?
+}
+
+private struct StructuredSessionReviewLinkPayload: Decodable {
+    let title: String
+    let url: String
 }
 
 private enum StructuredOutputKind {
@@ -1241,6 +1779,8 @@ private struct ParsedStructuredSessionReviewPayload {
     let headline: String
     let summary: String
     let insight: String
+    let entities: [StructuredSessionReviewEntityPayload]
+    let links: [StructuredSessionReviewLinkPayload]
 }
 
 private func parseStructuredSessionReviewPayload(from text: String) throws -> ParsedStructuredSessionReviewPayload {
@@ -1262,11 +1802,14 @@ private func parseStructuredSessionReviewPayload(from text: String) throws -> Pa
     guard !payload.insight.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
         throw ReviewGenerationError.invalidReview("The local model returned an empty insight.")
     }
+    try validateStructuredSessionReviewPayload(payload)
 
     return ParsedStructuredSessionReviewPayload(
         headline: payload.headline,
         summary: payload.summary,
-        insight: payload.insight
+        insight: payload.insight,
+        entities: payload.entities,
+        links: payload.links
     )
 }
 
@@ -1278,6 +1821,234 @@ private struct PeriodicSummaryPayload: Decodable {
     let title: String
     let summary: String
     let nextStep: String
+}
+
+private func validateStructuredSessionReviewPayload(_ payload: StructuredSessionReviewPayload) throws {
+    let headline = payload.headline.trimmingCharacters(in: .whitespacesAndNewlines)
+    let summary = payload.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+    let insight = payload.insight.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    if reviewWordCount(headline) > 10 {
+        throw ReviewGenerationError.invalidReview("The local model returned a headline that is too long.")
+    }
+    if headline.contains(":") {
+        throw ReviewGenerationError.invalidReview("The local model returned a headline with a colon.")
+    }
+    if reviewWordCount(summary) > 55 {
+        throw ReviewGenerationError.invalidReview("The local model returned a summary that is too long.")
+    }
+    if reviewWordCount(insight) > 18 {
+        throw ReviewGenerationError.invalidReview("The local model returned an insight that is too long.")
+    }
+    if [headline, summary, insight].contains(where: { $0.contains("`") }) {
+        throw ReviewGenerationError.invalidReview("The local model returned markdown code ticks in review text.")
+    }
+    if [headline, summary, insight].contains(where: containsRawURL) {
+        throw ReviewGenerationError.invalidReview("The local model returned raw URLs instead of plain review text.")
+    }
+    if [headline, summary, insight].contains(where: containsMarkupLikeTag) {
+        throw ReviewGenerationError.invalidReview("The local model returned markup instead of plain review text.")
+    }
+
+}
+
+private func validateSessionReviewText(
+    headline: String,
+    summary: String,
+    insight: String,
+    segments: [TimelineSegment]
+) throws {
+    _ = headline
+    _ = summary
+    _ = insight
+    _ = segments
+}
+
+private func sessionWritingGuidanceMarkdown(
+    reviewLearnings: [String],
+    feedbackExamples: [SessionReviewFeedbackExample]
+) -> String {
+    let learnedLines = reviewLearnings
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .prefix(5)
+        .map { "- \($0)" }
+        .joined(separator: "\n")
+
+    let feedbackLines = feedbackExamples
+        .prefix(4)
+        .map { example in
+            let reviewSaid = example.reviewSaid.trimmingCharacters(in: .whitespacesAndNewlines)
+            let feedback = example.userFeedback.trimmingCharacters(in: .whitespacesAndNewlines)
+            let label = example.label == .correction ? "Correction" : "Confirmed"
+            return "- \(label): Review said \"\(reviewSaid)\". User feedback: \"\(feedback)\"."
+        }
+        .joined(separator: "\n")
+
+    return """
+    # Writing guidance
+
+    Use this file to sharpen wording only. Current session evidence still wins.
+
+    Core reminders:
+    - Headline should name what the block became, not a generic verdict like "This stayed..." or "This never became coding."
+    - Summary should name the real repo, file, site, title, or tool when visible.
+    - Do not say "file activity" or mention Chrome or Safari when a better surface like GitHub or Zoom is visible.
+    - Insight should be one immediate move on an observed surface, usually a close-and-return or keep-and-cut move.
+    - Keep `entities` to the surfaces that actually mattered and `links` to URLs that were visibly opened.
+
+    Learned preferences:
+    \(learnedLines.nilIfBlank ?? "- none yet")
+
+    Recent feedback examples:
+    \(feedbackLines.nilIfBlank ?? "- none yet")
+    """
+}
+
+private func reviewWordCount(_ value: String) -> Int {
+    value.split(whereSeparator: \.isWhitespace).count
+}
+
+private func containsRawURL(_ value: String) -> Bool {
+    value.range(of: #"https?://"#, options: .regularExpression) != nil
+}
+
+private func containsMarkupLikeTag(_ value: String) -> Bool {
+    value.contains("```") || value.range(of: #"<[^>]+>"#, options: .regularExpression) != nil
+}
+
+private func validatedReviewEntities(
+    from payloads: [StructuredSessionReviewEntityPayload],
+    events: [ActivityEvent],
+    segments: [TimelineSegment]
+) -> [SessionReviewEntity] {
+    let allowedLabels = Set(
+        allowedEvidenceMentions(
+            from: segments,
+            events: events.filter { !$0.kind.isFocusGuardSignal && !isReviewNoiseEvent($0) }
+        )
+        .map(normalizedReviewToken)
+    )
+    let observedURLs = observedReviewURLs(events: events, segments: segments)
+
+    var seen: Set<String> = []
+    var entities: [SessionReviewEntity] = []
+
+    for payload in payloads.prefix(4) {
+        let label = payload.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { continue }
+        let lowercasedLabel = label.lowercased()
+        guard !lowercasedLabel.contains("default profile"),
+              !lowercasedLabel.contains("webstorage"),
+              !lowercasedLabel.contains("profile churn") else {
+            continue
+        }
+
+        let kind = SessionReviewEntityKind(rawValue: payload.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) ?? .unknown
+        let normalizedLabel = normalizedReviewToken(label)
+        let normalizedURL = normalizedObservedURL(payload.url)
+        let matchedDefinition = payload.referenceID.flatMap { ReviewEntityRegistry.definition(forReferenceID: $0) }
+            ?? ReviewEntityRegistry.definition(matchingValue: label)
+            ?? payload.url.flatMap { url in
+                normalizedObservedURL(url).flatMap(ReviewEntityRegistry.definition(forHost:))
+                    ?? ReviewEntityRegistry.definition(forHost: url)
+            }
+        let definitionMatchesEvidence = matchedDefinition.map { definition in
+            definition.allLabels.contains { allowedLabels.contains(normalizedReviewToken($0)) }
+                || definition.domains.contains { domain in
+                    let normalizedDomain = normalizedReviewToken(domain)
+                    return allowedLabels.contains(normalizedDomain)
+                        || observedURLs.contains(where: { $0.contains(normalizedDomain) })
+                }
+        } ?? false
+        let matchesEvidence = allowedLabels.contains(normalizedLabel)
+            || observedURLs.contains(where: { normalizedURL != nil && $0 == normalizedURL })
+            || (normalizedURL != nil && observedURLs.contains(where: { observed in
+                guard let normalizedURL else { return false }
+                return observed.hasPrefix(normalizedURL) || normalizedURL.hasPrefix(observed)
+            }))
+            || definitionMatchesEvidence
+
+        guard matchesEvidence else { continue }
+
+        if matchedDefinition?.referenceID == "driftly" {
+            let driftlySeconds = segments.reduce(0) { total, segment in
+                let isDriftly = [segment.appName, segment.primaryLabel, segment.secondaryLabel]
+                    .compactMap { $0?.lowercased() }
+                    .contains(where: { $0.contains("driftly") || $0.contains("log book") || $0.contains("logbook") })
+                return total + (isDriftly ? segmentDurationSeconds(segment) : 0)
+            }
+            if driftlySeconds < 90 {
+                continue
+            }
+        }
+
+        let key = "\(kind.rawValue)|\(normalizedLabel)|\(normalizedURL ?? "")"
+        guard seen.insert(key).inserted else { continue }
+
+        entities.append(
+            SessionReviewEntity(
+                label: matchedDefinition?.label ?? label,
+                kind: kind,
+                referenceID: matchedDefinition?.referenceID ?? payload.referenceID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,
+                url: payload.url?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+            )
+        )
+    }
+
+    return entities
+}
+
+private func validatedReviewLinks(
+    from payloads: [StructuredSessionReviewLinkPayload],
+    events: [ActivityEvent],
+    segments: [TimelineSegment]
+) -> [SessionReferenceLink] {
+    let observedURLs = observedReviewURLs(events: events, segments: segments)
+    var seen: Set<String> = []
+    var links: [SessionReferenceLink] = []
+
+    for payload in payloads.prefix(3) {
+        let title = payload.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = payload.url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, !url.isEmpty else { continue }
+        guard let normalizedURL = normalizedObservedURL(url) else { continue }
+
+        let isObserved = observedURLs.contains(normalizedURL) || observedURLs.contains(where: {
+            $0.hasPrefix(normalizedURL) || normalizedURL.hasPrefix($0)
+        })
+        guard isObserved else { continue }
+        guard seen.insert(normalizedURL).inserted else { continue }
+
+        links.append(SessionReferenceLink(title: title, url: url))
+    }
+
+    return links
+}
+
+private func observedReviewURLs(events: [ActivityEvent], segments: [TimelineSegment]) -> Set<String> {
+    let values = events.compactMap(\.resourceURL) + segments.compactMap(\.url)
+    return Set(values.compactMap(normalizedObservedURL))
+}
+
+private func normalizedObservedURL(_ value: String?) -> String? {
+    guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !value.isEmpty,
+          let components = URLComponents(string: value),
+          let scheme = components.scheme?.lowercased(),
+          let host = components.host?.lowercased() else {
+        return nil
+    }
+
+    let path = components.path.isEmpty ? "/" : components.path
+    return "\(scheme)://\(host)\(path)"
+}
+
+private func normalizedReviewToken(_ value: String) -> String {
+    value
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+        .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
 }
 
 private func parseLearningMemory(from text: String, sourceFeedbackCount: Int) throws -> SessionReviewLearningMemory {

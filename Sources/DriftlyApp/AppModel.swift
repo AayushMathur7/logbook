@@ -235,6 +235,34 @@ final class AppModel: ObservableObject {
         }
     }
 
+    var reviewProviderSelectionLabel: String {
+        switch reviewProviderSelection {
+        case .codex:
+            return "Codex (local ChatGPT login)"
+        case .claude:
+            return "Claude Code"
+        }
+    }
+
+    var reviewProviderIntroText: String {
+        switch reviewProviderSelection {
+        case .codex:
+            return "Driftly will use the local Codex CLI signed in on this Mac. In this setup, the login is your ChatGPT-backed Codex account."
+        case .claude:
+            return "Driftly will use the local Claude Code CLI signed in on this Mac."
+        }
+    }
+
+    var codexModelCompatibilityMessage: String? {
+        guard reviewProviderSelection == .codex else { return nil }
+        switch normalizedCodexModelName {
+        case "gpt-5-codex", "codex-mini-latest":
+            return "This model is currently rejected by the local ChatGPT-backed Codex login on this Mac. GPT-5.4 is the known working option."
+        default:
+            return nil
+        }
+    }
+
     var hasRunningSession: Bool {
         activeSession != nil
     }
@@ -271,7 +299,7 @@ final class AppModel: ObservableObject {
     var localReviewSetupSummary: String {
         switch reviewProviderSelection {
         case .codex:
-            return codexCLIStatus.message.isEmpty ? "Codex is not ready for AI review yet." : codexCLIStatus.message
+            return codexCLIStatus.message.isEmpty ? "Codex with the local ChatGPT login is not ready for AI review yet." : codexCLIStatus.message
         case .claude:
             return claudeCLIStatus.message.isEmpty ? "Claude Code is not ready for AI review yet." : claudeCLIStatus.message
         }
@@ -469,23 +497,30 @@ final class AppModel: ObservableObject {
         case .codex:
             let configuredModel = currentChatCLIConfiguration().codexModelName.trimmingCharacters(in: .whitespacesAndNewlines)
             if detectedCodex.installed && detectedCodex.authenticated {
-                reviewProviderStatusMessage = configuredModel.isEmpty
-                    ? "Codex is installed and signed in. Using its default model."
-                    : "Codex CLI is installed and signed in. Using \(configuredModel)."
+                if let compatibilityMessage = codexModelCompatibilityMessage {
+                    reviewProviderStatusMessage = compatibilityMessage
+                    reviewProviderStatusIsError = true
+                } else {
+                    reviewProviderStatusMessage = configuredModel.isEmpty
+                        ? "Codex CLI is installed and signed in with your local ChatGPT login. Using its default model."
+                        : "Codex CLI is installed and signed in with your local ChatGPT login. Using \(configuredModel)."
+                    reviewProviderStatusIsError = false
+                }
             } else {
                 reviewProviderStatusMessage = detectedCodex.message
+                reviewProviderStatusIsError = true
             }
-            reviewProviderStatusIsError = !(detectedCodex.installed && detectedCodex.authenticated)
         case .claude:
             let configuredModel = currentChatCLIConfiguration().claudeModelName.trimmingCharacters(in: .whitespacesAndNewlines)
             if detectedClaude.installed && detectedClaude.authenticated {
                 reviewProviderStatusMessage = configuredModel.isEmpty
                     ? "Claude Code is installed and signed in. Using its default model."
                     : "Claude Code is installed and signed in. Using \(configuredModel)."
+                reviewProviderStatusIsError = false
             } else {
                 reviewProviderStatusMessage = detectedClaude.message
+                reviewProviderStatusIsError = true
             }
-            reviewProviderStatusIsError = !(detectedClaude.installed && detectedClaude.authenticated)
         }
     }
 
@@ -1339,6 +1374,7 @@ final class AppModel: ObservableObject {
             goalMatch: review.goalMatch,
             headline: review.headline,
             summary: review.summary,
+            reviewEntities: review.reviewEntities,
             summarySpans: review.summarySpans,
             why: review.why,
             interruptions: review.interruptions,
@@ -1347,7 +1383,7 @@ final class AppModel: ObservableObject {
             timeline: timeline,
             trace: evidence.trace,
             evidence: evidence,
-            links: makeReferenceLinks(events: evidenceEvents),
+            links: review.links.isEmpty ? makeReferenceLinks(events: evidenceEvents) : review.links,
             appDurations: appDurations(from: evidenceEvents, sessionEnd: review.endedAt),
             appSwitchCount: evidenceEvents.filter { $0.kind == .appActivated || $0.kind == .tabChanged }.count,
             repoName: TimelineDeriver.repoName(from: evidenceEvents),
@@ -1359,7 +1395,7 @@ final class AppModel: ObservableObject {
             breakPointAtLabel: review.breakPointAtLabel,
             breakPoint: review.breakPoint,
             dominantThread: review.dominantThread,
-            referenceURL: review.referenceURL,
+            referenceURL: review.referenceURL ?? review.links.first?.url,
             focusAssessment: review.focusAssessment,
             confidenceNotes: review.confidenceNotes,
             segments: segments,

@@ -187,7 +187,7 @@ struct RichReviewText: View {
         if entityStyle == .plain {
             return mergedTrailingPunctuationTokens(rawTokens)
         }
-        return mergedTrailingPunctuationTokens(mergedEntityLeadTokens(rawTokens))
+        return mergedTrailingPunctuationTokens(mergedEntityPhraseTokens(rawTokens))
     }
 
     private func flowTokens(for span: SessionReviewInlineSpan) -> [RichReviewFlowToken] {
@@ -312,7 +312,7 @@ private enum RichReviewFlowToken {
     case code(String, url: String?)
     case link(String, url: String)
     case entity(text: String, badge: SourceBadgeModel?, url: String?)
-    case entityLead(text: String, badge: SourceBadgeModel?, url: String?)
+    case entityPhrase(lead: String?, text: String, badge: SourceBadgeModel?, trail: String?, url: String?)
 }
 
 private struct RichReviewTokenView: View {
@@ -352,12 +352,14 @@ private struct RichReviewTokenView: View {
             } else {
                 linkedText(text, urlString: url, font: font, color: color)
             }
-        case let .entityLead(text, badge, url):
+        case let .entityPhrase(lead, text, badge, trail, url):
             HStack(spacing: 4) {
-                Text(verbatim: text)
-                    .font(font)
-                    .foregroundStyle(color)
-                    .fixedSize()
+                if let lead, !lead.isEmpty {
+                    Text(verbatim: lead)
+                        .font(font)
+                        .foregroundStyle(color)
+                        .fixedSize()
+                }
 
                 if let badge {
                     switch entityStyle {
@@ -366,8 +368,17 @@ private struct RichReviewTokenView: View {
                     case .inlineChip:
                         linkedBadge(InlineEntityChip(badge: badge, font: font, isLinked: url != nil), urlString: url)
                     case .plain:
-                        linkedText(badge.label, urlString: url, font: font, color: color)
+                        linkedText(text, urlString: url, font: font, color: color)
                     }
+                } else {
+                    linkedText(text, urlString: url, font: font, color: color)
+                }
+
+                if let trail, !trail.isEmpty {
+                    Text(verbatim: trail)
+                        .font(font)
+                        .foregroundStyle(color)
+                        .fixedSize()
                 }
             }
             .fixedSize()
@@ -599,20 +610,32 @@ private struct InlineWrapLayout: Layout {
 
         for subview in subviews {
             let idealSize = subview.sizeThatFits(.unspecified)
-            let size: CGSize
+            let remainingLineWidth = max(bounds.minX + maxWidth - origin.x, 0)
+            let fittingWidth = origin.x > bounds.minX ? remainingLineWidth : maxWidth
+            var size = idealSize
+            var wrappedInRemainingWidth = false
 
-            if idealSize.width > maxWidth {
+            if fittingWidth.isFinite, fittingWidth > 0, idealSize.width > fittingWidth {
                 size = subview.sizeThatFits(
-                    ProposedViewSize(width: maxWidth, height: nil)
+                    ProposedViewSize(width: fittingWidth, height: nil)
                 )
-            } else {
-                size = idealSize
+                wrappedInRemainingWidth = size.height > idealSize.height
             }
 
-            if origin.x > bounds.minX, origin.x + size.width > bounds.minX + maxWidth {
+            if origin.x > bounds.minX,
+               (origin.x + size.width > bounds.minX + maxWidth || wrappedInRemainingWidth) {
                 origin.x = bounds.minX
                 origin.y += lineHeight + verticalSpacing
                 lineHeight = 0
+
+                let wrappedIdealSize = subview.sizeThatFits(.unspecified)
+                if wrappedIdealSize.width > maxWidth {
+                    size = subview.sizeThatFits(
+                        ProposedViewSize(width: maxWidth, height: nil)
+                    )
+                } else {
+                    size = wrappedIdealSize
+                }
             }
 
             if place {
@@ -655,23 +678,52 @@ private enum InlineSemanticColor {
     }
 }
 
-private func mergedEntityLeadTokens(_ tokens: [RichReviewFlowToken]) -> [RichReviewFlowToken] {
+private func mergedEntityPhraseTokens(_ tokens: [RichReviewFlowToken]) -> [RichReviewFlowToken] {
     var result: [RichReviewFlowToken] = []
+    var index = 0
 
-    for token in tokens {
-        guard case let .entity(_, badge, url) = token,
-              let last = result.last,
-              case let .text(previousText) = last,
-              let split = splitTrailingEntityLead(in: previousText) else {
+    while index < tokens.count {
+        let token = tokens[index]
+
+        guard case let .entity(text, badge, url) = token else {
             result.append(token)
+            index += 1
             continue
         }
 
-        result.removeLast()
-        if !split.prefix.isEmpty {
-            result.append(.text(split.prefix))
+        var lead: String?
+        if let last = result.last,
+           case let .text(previousText) = last,
+           let split = splitTrailingEntityLead(in: previousText) {
+            result.removeLast()
+            if !split.prefix.isEmpty {
+                result.append(.text(split.prefix))
+            }
+            lead = split.lead
         }
-        result.append(.entityLead(text: split.lead, badge: badge, url: url))
+
+        var trail: String?
+        if index + 1 < tokens.count,
+           case let .text(nextText) = tokens[index + 1],
+           let split = splitLeadingEntityTrail(in: nextText) {
+            trail = split.trail
+            if !split.remainder.isEmpty {
+                result.append(.entityPhrase(lead: lead, text: text, badge: badge, trail: trail, url: url))
+                result.append(.text(split.remainder))
+                index += 2
+                continue
+            }
+            index += 2
+            result.append(.entityPhrase(lead: lead, text: text, badge: badge, trail: trail, url: url))
+            continue
+        }
+
+        if lead != nil {
+            result.append(.entityPhrase(lead: lead, text: text, badge: badge, trail: nil, url: url))
+        } else {
+            result.append(token)
+        }
+        index += 1
     }
 
     return result
@@ -698,7 +750,7 @@ private func mergedTrailingPunctuationTokens(_ tokens: [RichReviewFlowToken]) ->
 }
 
 private func splitTrailingEntityLead(in text: String) -> (prefix: String, lead: String)? {
-    let pattern = #"(.*?)(\s+(?:and|or|via|on|in)\s*)$"#
+    let pattern = #"(.*?)(\s+(?:and|or|via|on|in|a|an|the)\s*)$"#
     guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
         return nil
     }
@@ -715,6 +767,64 @@ private func splitTrailingEntityLead(in text: String) -> (prefix: String, lead: 
     let lead = String(text[leadRange]).trimmingCharacters(in: .whitespacesAndNewlines)
     guard !lead.isEmpty else { return nil }
     return (prefix, lead)
+}
+
+private func splitLeadingEntityTrail(in text: String) -> (trail: String, remainder: String)? {
+    let allowedPunctuation = CharacterSet(charactersIn: "-'’/&")
+    let blockedFirstWords: Set<String> = [
+        "a", "an", "and", "are", "as", "at", "be", "but", "by", "did", "do", "does",
+        "for", "from", "in", "into", "is", "it", "of", "on", "or", "so", "that",
+        "the", "their", "then", "these", "this", "those", "to", "via", "was", "were",
+        "with"
+    ]
+
+    var cursor = text.startIndex
+    while cursor < text.endIndex, text[cursor].isWhitespace {
+        cursor = text.index(after: cursor)
+    }
+
+    guard cursor < text.endIndex else { return nil }
+
+    func readWord(from start: String.Index) -> (word: String, end: String.Index)? {
+        var end = start
+        while end < text.endIndex {
+            let character = text[end]
+            if character.isLetter || character.isNumber {
+                end = text.index(after: end)
+                continue
+            }
+
+            if let scalar = character.unicodeScalars.first,
+               allowedPunctuation.contains(scalar) {
+                end = text.index(after: end)
+                continue
+            }
+
+            break
+        }
+
+        guard end > start else { return nil }
+        return (String(text[start..<end]), end)
+    }
+
+    guard let first = readWord(from: cursor) else { return nil }
+    guard !blockedFirstWords.contains(first.word.lowercased()) else { return nil }
+
+    var trailEnd = first.end
+    var nextCursor = trailEnd
+    while nextCursor < text.endIndex, text[nextCursor].isWhitespace {
+        nextCursor = text.index(after: nextCursor)
+    }
+
+    if nextCursor < text.endIndex,
+       let second = readWord(from: nextCursor),
+       !blockedFirstWords.contains(second.word.lowercased()) {
+        trailEnd = second.end
+    }
+
+    let trail = String(text[cursor..<trailEnd])
+    guard !trail.isEmpty else { return nil }
+    return (trail, String(text[trailEnd...]))
 }
 
 private func splitLeadingPunctuation(in text: String) -> (punctuation: String, remainder: String)? {
@@ -734,19 +844,28 @@ private func splitLeadingPunctuation(in text: String) -> (punctuation: String, r
 private func appendingReviewSuffix(_ suffix: String, to token: RichReviewFlowToken) -> RichReviewFlowToken {
     switch token {
     case let .text(value):
-        .text(value + suffix)
+        return .text(value + suffix)
     case let .strong(value):
-        .strong(value + suffix)
+        return .strong(value + suffix)
     case let .emphasis(value, url):
-        .emphasis(value + suffix, url: url)
+        return .emphasis(value + suffix, url: url)
     case let .code(value, url):
-        .code(value + suffix, url: url)
+        return .code(value + suffix, url: url)
     case let .link(value, url):
-        .link(value + suffix, url: url)
+        return .link(value + suffix, url: url)
     case let .entity(text, badge, url):
-        .entity(text: text + suffix, badge: badge, url: url)
-    case let .entityLead(text, badge, url):
-        .entityLead(text: text, badge: badge.map { SourceBadgeModel(label: $0.label + suffix, icon: $0.icon) }, url: url)
+        return .entity(text: text + suffix, badge: badge, url: url)
+    case let .entityPhrase(lead, text, badge, trail, url):
+        if let trail, !trail.isEmpty {
+            return .entityPhrase(lead: lead, text: text, badge: badge, trail: trail + suffix, url: url)
+        }
+        return .entityPhrase(
+            lead: lead,
+            text: text,
+            badge: badge.map { SourceBadgeModel(label: $0.label + suffix, icon: $0.icon) },
+            trail: nil,
+            url: url
+        )
     }
 }
 
@@ -902,31 +1021,24 @@ private enum MarkdownInlineParser {
         guard !value.isEmpty else { return [] }
 
         var chunks: [String] = []
-        var currentWord = ""
-        var pendingWhitespace = ""
+        var currentChunk = ""
 
         for character in value {
-            if character.isWhitespace {
-                if !currentWord.isEmpty {
-                    currentWord.append(character)
-                } else {
-                    pendingWhitespace.append(character)
-                }
-            } else {
-                if !pendingWhitespace.isEmpty {
-                    if chunks.isEmpty {
-                        currentWord.append(pendingWhitespace)
-                    } else {
-                        chunks[chunks.count - 1].append(contentsOf: pendingWhitespace)
-                    }
-                    pendingWhitespace = ""
-                }
-                currentWord.append(character)
+            currentChunk.append(character)
+
+            if character.isWhitespace, !currentChunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                chunks.append(currentChunk)
+                currentChunk = ""
             }
         }
 
-        if !currentWord.isEmpty {
-            chunks.append(currentWord)
+        if !currentChunk.isEmpty {
+            if currentChunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !chunks.isEmpty {
+                chunks[chunks.count - 1].append(currentChunk)
+            } else {
+                chunks.append(currentChunk)
+            }
         }
 
         return chunks

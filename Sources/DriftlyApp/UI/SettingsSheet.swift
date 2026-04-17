@@ -11,10 +11,13 @@ struct SettingsSheet: View {
     }
 
     private let codexModelOptions: [ModelOption] = [
-        ModelOption(label: "GPT-5.4", value: "gpt-5.4", detail: "Recommended default. OpenAI’s flagship model for complex reasoning and coding."),
+        ModelOption(label: "GPT-5.4", value: "gpt-5.4", detail: "Recommended default for your current Codex login. Strong general model that works in this setup."),
+        ModelOption(label: "codex-mini-latest", value: "codex-mini-latest", detail: "Codex-CLI-native model, but currently rejected by this ChatGPT Codex login."),
+        ModelOption(label: "GPT-5-Codex", value: "gpt-5-codex", detail: "Codex-tuned model for API-based Codex workflows. Currently rejected by this ChatGPT Codex login."),
+        ModelOption(label: "GPT-5.3-Codex", value: "gpt-5.3-codex", detail: "Stronger Codex-tuned model for long-horizon coding tasks."),
+        ModelOption(label: "GPT-5.2-Codex", value: "gpt-5.2-codex", detail: "Earlier Codex-tuned model with strong long-horizon coding performance."),
         ModelOption(label: "GPT-5.4 mini", value: "gpt-5.4-mini", detail: "Lower-latency GPT-5.4 variant for coding and subagents."),
         ModelOption(label: "GPT-5.4 nano", value: "gpt-5.4-nano", detail: "Cheapest GPT-5.4-class option for simple high-volume tasks."),
-        ModelOption(label: "codex-mini-latest", value: "codex-mini-latest", detail: "Fast reasoning model optimized specifically for Codex CLI."),
     ]
 
     private let claudeModelOptions: [ModelOption] = [
@@ -57,7 +60,7 @@ struct SettingsSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
                         settingsSection("AI review") {
-                            Text("Pick how Driftly writes reviews. Codex is the default. Claude Code is the other option.")
+                            Text("Pick how Driftly writes reviews. Codex is the default local path, and on this Mac that means the local ChatGPT-backed Codex login.")
                                 .font(.system(size: 11))
                                 .foregroundStyle(DriftlyStyle.subtleText)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -67,16 +70,21 @@ struct SettingsSheet: View {
                                     .font(.system(size: 12, weight: .medium))
                                 Menu {
                                     ForEach(AIReviewProvider.visibleAppCases, id: \.rawValue) { provider in
-                                        Button(provider.displayName) {
+                                        Button(provider == .codex ? "Codex (local ChatGPT login)" : provider.displayName) {
                                             model.reviewProviderSelection = provider
                                             Task { await model.refreshReviewProviderStatus() }
                                         }
                                     }
                                 } label: {
-                                    settingsMenuField(model.reviewProviderSelection.displayName)
+                                    settingsMenuField(model.reviewProviderSelectionLabel)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
+
+                            Text(model.reviewProviderIntroText)
+                                .font(.system(size: 11))
+                                .foregroundStyle(DriftlyStyle.subtleText)
+                                .fixedSize(horizontal: false, vertical: true)
 
                             switch model.reviewProviderSelection {
                             case .codex:
@@ -91,6 +99,13 @@ struct SettingsSheet: View {
                                         selection: $model.codexModelName,
                                         options: codexModelOptions
                                     )
+
+                                    if let compatibilityMessage = model.codexModelCompatibilityMessage {
+                                        settingsStatusMessage(
+                                            text: compatibilityMessage,
+                                            isError: true
+                                        )
+                                    }
                                 }
 
                                 HStack(spacing: 8) {

@@ -171,7 +171,7 @@ extension ContentView {
                     fallbackMarkdown: emphasizedReviewMarkdown(review.summary),
                     font: .system(size: 13),
                     color: DriftlyStyle.subtleText,
-                    entityStyle: .plain
+                    entityStyle: .inlineChip
                 )
 
                 if let insight = review.focusAssessment?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -597,6 +597,30 @@ private struct LearningIconButton: View {
     private var strokeColor: Color {
         if isSelected || isHovering { return DriftlyStyle.cardStroke }
         return Color.clear
+    }
+}
+
+private struct ReviewEntityStrip: View {
+    let entities: [SessionReviewEntity]
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(entities) { entity in
+                    let badge = SourceBadgeFactory.badge(for: entity)
+                    if let urlString = entity.url,
+                       let url = URL(string: urlString) {
+                        Link(destination: url) {
+                            SourceBadge(badge: badge)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        SourceBadge(badge: badge)
+                    }
+                }
+            }
+            .padding(.vertical, 1)
+        }
     }
 }
 

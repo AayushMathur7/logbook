@@ -13,6 +13,7 @@ What Driftly should avoid:
 - dashboard phrasing like dominated your time block, accounted for, remained the dominant surface, desktop activity, time period
 - abstract phrasing like alignment, fragmentation, orientation, exploration, reconnaissance, optimization
 - generic verdicts like partially matched the building goal or your desktop activity didn't align
+- generic headlines like This stayed on..., This never..., or This never really became coding
 - empty summaries like watched YouTube videos and used Codex
 - blamey headlines like you got pulled into
 - full distracting video titles unless the goal was explicitly to watch that video
@@ -23,3 +24,8 @@ Preferred shape:
 - summary sentence 1: what mostly happened
 - summary sentence 2: what weakened it or what still held
 - insight: a direct next move with the concrete surface to close, keep, or return to
+
+Good examples:
+- "Codex held about 9 minutes, but Telegram and Zoom kept breaking the thread."
+- "Most of the block stayed on YouTube, while Codex only showed up in short checks."
+- "Close Telegram and return to the repo thread in Codex."
