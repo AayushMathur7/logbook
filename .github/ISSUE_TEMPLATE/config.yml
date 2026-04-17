@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Driftly Releases
-    url: https://github.com/AayushMathur7/driftly/releases
-    about: Download the latest beta builds and release notes.
+  - name: Driftly Website
+    url: https://driftly.sh
+    about: Read the project overview and current product direction.

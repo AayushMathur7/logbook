@@ -5,7 +5,6 @@ set -euo pipefail
 required_files=(
   "README.md"
   "Package.swift"
-  "docs/v1-spec.md"
   "docs/technical-architecture.md"
   "docs/event-model.md"
   "integrations/shell/driftly.zsh"

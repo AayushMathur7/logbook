@@ -8,19 +8,29 @@ Driftly watches a goal-based work session, captures lightweight local context, a
 
 Website: [driftly.sh](https://driftly.sh)
 
-[![Latest Release](https://img.shields.io/github/v/release/AayushMathur7/driftly?label=release)](https://github.com/AayushMathur7/driftly/releases)
 [![License](https://img.shields.io/github/license/AayushMathur7/driftly)](https://github.com/AayushMathur7/driftly/blob/main/LICENSE)
 ![macOS](https://img.shields.io/badge/macOS-13%2B-black)
 
-## Install
+## Current Status
 
-If you are trying Driftly as an app:
+Driftly does not currently publish a public release build.
 
-1. Download the latest build from the [GitHub Releases page](https://github.com/AayushMathur7/driftly/releases).
-2. Move `Driftly.app` into `Applications`.
-3. Open Driftly.
-4. Grant Accessibility when prompted for richer window and page titles.
-5. In Settings, choose your review provider: `Codex` or `Claude Code`.
+If you want to try it today, run it from source.
+
+## Run From Source
+
+From the repo root:
+
+```bash
+./scripts/dev.sh
+```
+
+That builds `dist/Driftly.app` and opens it.
+
+After launch:
+
+1. Grant Accessibility when prompted for richer window and page titles.
+2. In Settings, choose your review provider: `Codex` or `Claude Code`.
 
 If your provider is not installed or signed in yet, Driftly still saves the session, but it will not generate the AI review until the provider is ready.
 
@@ -59,10 +69,9 @@ If you are using `Claude Code` or `Codex`, you can improve the review quality fu
 
 Useful files:
 
-- [AGENTS.md](/Users/aayush/ai-projects/driftly/AGENTS.md:1)
-- [CLAUDE.md](/Users/aayush/ai-projects/driftly/CLAUDE.md:1)
-- [driftly-insight-writing skill](/Users/aayush/ai-projects/driftly/.agents/skills/driftly-insight-writing/SKILL.md:1)
-- [driftly-pattern-writing skill](/Users/aayush/ai-projects/driftly/.agents/skills/driftly-pattern-writing/SKILL.md:1)
+- [AGENTS.md](AGENTS.md)
+- [CLAUDE.md](CLAUDE.md)
+- [driftly-insight-writing skill](.agents/skills/driftly-insight-writing/SKILL.md)
 
 That setup makes Driftly more than a fixed app. It becomes a review system you can adapt to your own work style.
 
@@ -98,7 +107,7 @@ Storage paths:
 - database: `~/Library/Application Support/Driftly/driftly.sqlite`
 - shell integration: `integrations/shell/driftly.zsh`
 
-See [PRIVACY.md](/Users/aayush/ai-projects/driftly/PRIVACY.md:1) for the full privacy model.
+See [PRIVACY.md](PRIVACY.md) for the full privacy model.
 
 ## Requirements
 
@@ -114,17 +123,9 @@ Optional:
 source "/absolute/path/to/driftly/integrations/shell/driftly.zsh"
 ```
 
-## Run Locally
+## Development Checks
 
-Clone the repo, then from the repo root run:
-
-```bash
-./scripts/dev.sh
-```
-
-That builds `dist/Driftly.app` and opens it.
-
-Run checks:
+Run checks from the repo root:
 
 ```bash
 bash scripts/check.sh
@@ -133,12 +134,13 @@ bash scripts/check.sh
 ## Docs
 
 - [driftly.sh](https://driftly.sh)
-- [docs/install.md](/Users/aayush/ai-projects/driftly/docs/install.md:1)
-- [docs/release-macos.md](/Users/aayush/ai-projects/driftly/docs/release-macos.md:1)
-- [docs/launch-checklist.md](/Users/aayush/ai-projects/driftly/docs/launch-checklist.md:1)
-- [LICENSE](/Users/aayush/ai-projects/driftly/LICENSE:1)
-- [SECURITY.md](/Users/aayush/ai-projects/driftly/SECURITY.md:1)
+- [docs/technical-architecture.md](docs/technical-architecture.md)
+- [docs/event-model.md](docs/event-model.md)
+- [docs/tracking-guide.md](docs/tracking-guide.md)
+- [docs/testing.md](docs/testing.md)
+- [LICENSE](LICENSE)
+- [SECURITY.md](SECURITY.md)
 
 ## License
 
-Driftly is released under the license in [LICENSE](/Users/aayush/ai-projects/driftly/LICENSE:1).
+Driftly is released under the license in [LICENSE](LICENSE).

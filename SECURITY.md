@@ -30,7 +30,7 @@ The current project aims to reduce risk by keeping things simple:
 
 - capture is local
 - storage is local
-- model calls are limited to a local Ollama host
+- model calls run only through the configured local CLI provider
 - high-risk sources like screenshots, keystrokes, audio, and camera input are not captured
 
 ## Response expectations
