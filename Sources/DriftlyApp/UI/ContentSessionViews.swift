@@ -97,6 +97,10 @@ extension ContentView {
             }
             .frame(maxWidth: .infinity)
 
+            if let prompt = model.activeFocusGuardPrompt {
+                focusGuardPromptCard(prompt)
+            }
+
             openAIActionButton("End session", systemImage: "stop.fill") {
                 model.endSessionNow()
             }
@@ -168,5 +172,34 @@ extension ContentView {
         let minutes = remaining / 60
         let seconds = remaining % 60
         return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    func focusGuardPromptCard(_ prompt: FocusGuardPrompt) -> some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(prompt.reason)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(DriftlyStyle.text)
+
+                Text(prompt.message)
+                    .font(.system(size: 12))
+                    .foregroundStyle(DriftlyStyle.subtleText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    openAIActionButton("Back on track", systemImage: "checkmark") {
+                        model.dismissFocusGuardPrompt()
+                    }
+
+                    openAIActionButton("Snooze", systemImage: "zzz") {
+                        model.snoozeFocusGuardPrompt()
+                    }
+
+                    openAIActionButton("Ignore", systemImage: "xmark") {
+                        model.ignoreFocusGuardPrompt()
+                    }
+                }
+            }
+        }
     }
 }

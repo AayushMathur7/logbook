@@ -78,6 +78,7 @@ final class FocusGuardNotificationCoordinator: NSObject, UNUserNotificationCente
         }
 
         guard await authorizationGranted() else {
+            scheduleFallback(prompt: prompt)
             return
         }
 

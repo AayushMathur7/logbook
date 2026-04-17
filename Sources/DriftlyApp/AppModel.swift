@@ -1735,6 +1735,10 @@ private extension AppModel {
         guard now >= (nextFocusGuardEvaluationAt ?? session.startedAt.addingTimeInterval(focusGuardReminderInterval)) else {
             return
         }
+        guard activeFocusGuardPrompt == nil else {
+            nextFocusGuardEvaluationAt = now.addingTimeInterval(focusGuardReminderInterval)
+            return
+        }
 
         if let snoozedUntil = focusGuardRuntimeState.snoozedUntil, snoozedUntil > now {
             nextFocusGuardEvaluationAt = snoozedUntil
