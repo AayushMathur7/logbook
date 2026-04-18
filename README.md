@@ -15,7 +15,9 @@ Website: [driftly.sh](https://driftly.sh)
 [![License](https://img.shields.io/github/license/AayushMathur7/driftly)](https://github.com/AayushMathur7/driftly/blob/main/LICENSE)
 ![macOS](https://img.shields.io/badge/macOS-13%2B-black)
 
-## How It Looks
+## How Driftly Works
+
+Driftly starts with one clear goal, captures lightweight local evidence while you work, and ends the block with a short review of what actually happened.
 
 ### Setup
 
@@ -24,6 +26,14 @@ Website: [driftly.sh](https://driftly.sh)
 ### Review
 
 ![Driftly session review](docs/images/session-review.png)
+
+- Start a session with one clear goal.
+- Capture local evidence such as app switches, page titles, file activity, and shell commands.
+- Generate a short evidence-based review when the session ends.
+- Offer optional in-session reminders while the session is running.
+- Generate daily and weekly reflections from saved sessions.
+
+The point is not to make a dashboard. The point is to help you see what the block actually turned into.
 
 ## Run From Source
 
@@ -41,16 +51,6 @@ After launch:
 2. In Settings, choose your review provider: `Codex` or `Claude Code`.
 
 If your provider is not installed or signed in yet, Driftly still saves the session, but it will not generate the AI review until the provider is ready.
-
-## What Driftly Does
-
-- Start a session with one clear goal.
-- Capture local evidence such as app switches, page titles, file activity, and shell commands.
-- Generate a short evidence-based review when the session ends.
-- Offer optional in-session reminders while the session is running.
-- Generate daily and weekly reflections from saved sessions.
-
-The point is not to make a dashboard. The point is to help you see what the block actually turned into.
 
 ## Adapt It For Your Own Workflow
 
