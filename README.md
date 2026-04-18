@@ -21,11 +21,15 @@ Driftly starts with one clear goal, captures lightweight local evidence while yo
 
 ### Setup
 
-![Driftly session setup](docs/images/session-setup.png)
+<p align="center">
+  <img src="docs/images/session-setup.png" alt="Driftly session setup" width="720" />
+</p>
 
 ### Review
 
-![Driftly session review](docs/images/session-review.png)
+<p align="center">
+  <img src="docs/images/session-review.png" alt="Driftly session review" width="720" />
+</p>
 
 - Start a session with one clear goal.
 - Capture local evidence such as app switches, page titles, file activity, and shell commands.
