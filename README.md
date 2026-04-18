@@ -15,6 +15,16 @@ Website: [driftly.sh](https://driftly.sh)
 [![License](https://img.shields.io/github/license/AayushMathur7/driftly)](https://github.com/AayushMathur7/driftly/blob/main/LICENSE)
 ![macOS](https://img.shields.io/badge/macOS-13%2B-black)
 
+## How It Looks
+
+### Setup
+
+![Driftly session setup](docs/images/session-setup.png)
+
+### Review
+
+![Driftly session review](docs/images/session-review.png)
+
 ## Run From Source
 
 From the repo root:
