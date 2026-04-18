@@ -33,7 +33,7 @@ Driftly starts with one clear goal, captures lightweight local evidence while yo
 - Offer optional in-session reminders while the session is running.
 - Generate daily and weekly reflections from saved sessions.
 
-The point is not to make a dashboard. The point is to help you see what the block actually turned into.
+Driftly helps you see what the block actually turned into.
 
 ## Run From Source
 
