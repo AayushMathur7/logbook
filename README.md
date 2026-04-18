@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Sources/DriftlyApp/Resources/DriftlyAppIconSource.png" alt="Driftly" width="96" />
+</p>
+
 # Driftly
 
 **A local macOS app that tells you whether your focus session actually stayed on track.**
@@ -10,12 +14,6 @@ Website: [driftly.sh](https://driftly.sh)
 
 [![License](https://img.shields.io/github/license/AayushMathur7/driftly)](https://github.com/AayushMathur7/driftly/blob/main/LICENSE)
 ![macOS](https://img.shields.io/badge/macOS-13%2B-black)
-
-## Current Status
-
-Driftly does not currently publish a public release build.
-
-If you want to try it today, run it from source.
 
 ## Run From Source
 
@@ -44,16 +42,6 @@ If your provider is not installed or signed in yet, Driftly still saves the sess
 
 The point is not to make a dashboard. The point is to help you see what the block actually turned into.
 
-## Use It In 30 Seconds
-
-1. Open Driftly.
-2. Write one goal.
-3. Start the session.
-4. Do the work.
-5. Read the review at the end.
-
-That is the whole loop.
-
 ## Adapt It For Your Own Workflow
 
 Driftly is opinionated, but it is also meant to be adaptable.
@@ -75,7 +63,7 @@ Useful files:
 
 That setup makes Driftly more than a fixed app. It becomes a review system you can adapt to your own work style.
 
-## Privacy And Local-First Storage
+## Privacy And Local Storage
 
 Driftly is built to stay legible and trustworthy.
 
@@ -143,4 +131,4 @@ bash scripts/check.sh
 
 ## License
 
-Driftly is released under the license in [LICENSE](LICENSE).
+Driftly is available under the license in [LICENSE](LICENSE).
