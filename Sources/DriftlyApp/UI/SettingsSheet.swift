@@ -129,6 +129,10 @@ struct SettingsSheet: View {
                                     }
                                 }
 
+                                Text("Seconds. Set 0 to disable the review timeout.")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(DriftlyStyle.subtleText)
+
                                 settingsInlineToggle("Debug model I/O", isOn: $model.chatCLIStoreDebugIO)
                             case .claude:
                                 chatCLISetupOverview(
@@ -164,6 +168,10 @@ struct SettingsSheet: View {
                                         Task { await model.refreshReviewProviderStatus() }
                                     }
                                 }
+
+                                Text("Seconds. Set 0 to disable the review timeout.")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(DriftlyStyle.subtleText)
 
                                 settingsInlineToggle("Debug model I/O", isOn: $model.chatCLIStoreDebugIO)
                             }

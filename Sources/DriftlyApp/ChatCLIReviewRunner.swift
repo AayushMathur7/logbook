@@ -233,7 +233,7 @@ private enum LoginShellRunner {
         return "'\(escaped)'"
     }
 
-    static func run(_ command: String, timeout: TimeInterval = 30) -> LoginShellResult {
+    static func run(_ command: String, timeout: TimeInterval? = 30) -> LoginShellResult {
         let process = Process()
         process.executableURL = userLoginShell
         process.arguments = ["-l", "-i", "-c", command]
@@ -250,19 +250,23 @@ private enum LoginShellRunner {
             return LoginShellResult(stdout: "", stderr: error.localizedDescription, exitCode: -1)
         }
 
-        let semaphore = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
-            process.waitUntilExit()
-            semaphore.signal()
-        }
+        if let timeout {
+            let semaphore = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                process.waitUntilExit()
+                semaphore.signal()
+            }
 
-        if semaphore.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            return LoginShellResult(
-                stdout: "",
-                stderr: "Command timed out after \(Int(timeout)) seconds",
-                exitCode: -2
-            )
+            if semaphore.wait(timeout: .now() + timeout) == .timedOut {
+                process.terminate()
+                return LoginShellResult(
+                    stdout: "",
+                    stderr: "Command timed out after \(Int(timeout)) seconds",
+                    exitCode: -2
+                )
+            }
+        } else {
+            process.waitUntilExit()
         }
 
         let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
@@ -273,6 +277,10 @@ private enum LoginShellRunner {
 }
 
 enum ChatCLIReviewRunner {
+    private static func normalizedExecutionTimeoutSeconds(_ timeoutSeconds: Int) -> Int? {
+        timeoutSeconds > 0 ? max(timeoutSeconds, 10) : nil
+    }
+
     private static func resolvedExecutablePath(for tool: ChatCLITool) -> String? {
         var candidates: [String] = []
         var seen = Set<String>()
@@ -386,7 +394,7 @@ enum ChatCLIReviewRunner {
         guard status.installed else { throw ChatCLIError.notInstalled(tool) }
         guard status.authenticated else { throw ChatCLIError.notAuthenticated(tool) }
 
-        let timeout = max(timeoutSeconds, 10)
+        let timeout = normalizedExecutionTimeoutSeconds(timeoutSeconds)
         let baseDirectory = try ensureWorkingDirectory()
         let runtimeContext = try prepareRuntimeContext(
             tool: tool,
@@ -410,13 +418,13 @@ enum ChatCLIReviewRunner {
                 executablePath: executablePath,
                 prompt: effectivePrompt,
                 model: model,
-                timeoutSeconds: timeout,
+                timeoutSeconds: timeout ?? 0,
                 schemaPath: schemaPath.path,
                 outputPath: outputPath.path,
                 workingDirectory: runtimeContext.workingDirectory.path
             )
-            let result = LoginShellRunner.run(command, timeout: TimeInterval(timeout))
-            if result.exitCode == -2 {
+            let result = LoginShellRunner.run(command, timeout: timeout.map(TimeInterval.init))
+            if result.exitCode == -2, let timeout {
                 throw ChatCLIError.timedOut(tool, timeout)
             }
             if result.exitCode != 0 {
@@ -437,8 +445,8 @@ enum ChatCLIReviewRunner {
                 schemaJSON: schemaJSON,
                 workingDirectory: runtimeContext.workingDirectory.path
             )
-            let result = LoginShellRunner.run(command, timeout: TimeInterval(timeout))
-            if result.exitCode == -2 {
+            let result = LoginShellRunner.run(command, timeout: timeout.map(TimeInterval.init))
+            if result.exitCode == -2, let timeout {
                 throw ChatCLIError.timedOut(tool, timeout)
             }
             if result.exitCode != 0 {
@@ -469,7 +477,7 @@ enum ChatCLIReviewRunner {
         guard status.installed else { throw ChatCLIError.notInstalled(tool) }
         guard status.authenticated else { throw ChatCLIError.notAuthenticated(tool) }
 
-        let timeout = max(timeoutSeconds, 10)
+        let timeout = normalizedExecutionTimeoutSeconds(timeoutSeconds)
         let baseDirectory = try ensureWorkingDirectory()
         let runtimeContext = try prepareRuntimeContext(
             tool: tool,
@@ -490,13 +498,13 @@ enum ChatCLIReviewRunner {
                 executablePath: executablePath,
                 prompt: effectivePrompt,
                 model: model,
-                timeoutSeconds: timeout,
+                timeoutSeconds: timeout ?? 0,
                 schemaPath: nil,
                 outputPath: outputPath.path,
                 workingDirectory: runtimeContext.workingDirectory.path
             )
-            let result = LoginShellRunner.run(command, timeout: TimeInterval(timeout))
-            if result.exitCode == -2 {
+            let result = LoginShellRunner.run(command, timeout: timeout.map(TimeInterval.init))
+            if result.exitCode == -2, let timeout {
                 throw ChatCLIError.timedOut(tool, timeout)
             }
             if result.exitCode != 0 {
@@ -517,8 +525,8 @@ enum ChatCLIReviewRunner {
                 schemaJSON: nil,
                 workingDirectory: runtimeContext.workingDirectory.path
             )
-            let result = LoginShellRunner.run(command, timeout: TimeInterval(timeout))
-            if result.exitCode == -2 {
+            let result = LoginShellRunner.run(command, timeout: timeout.map(TimeInterval.init))
+            if result.exitCode == -2, let timeout {
                 throw ChatCLIError.timedOut(tool, timeout)
             }
             if result.exitCode != 0 {

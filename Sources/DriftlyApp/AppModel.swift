@@ -730,7 +730,7 @@ final class AppModel: ObservableObject {
             chatCLI: ChatCLIConfiguration(
                 codexModelName: normalizedCodexModelName,
                 claudeModelName: normalizedClaudeModelName,
-                timeoutSeconds: max(Int(chatCLITimeoutInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 90, 10),
+                timeoutSeconds: normalizedChatCLITimeoutSeconds,
                 storeDebugIO: chatCLIStoreDebugIO
             ),
             summaryAutomation: SummaryAutomationSettings(
@@ -772,11 +772,15 @@ final class AppModel: ObservableObject {
         focusGuardPreset = enabled ? .balanced : .off
     }
 
+    private var normalizedChatCLITimeoutSeconds: Int {
+        max(Int(chatCLITimeoutInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 90, 0)
+    }
+
     private func currentChatCLIConfiguration() -> ChatCLIConfiguration {
         ChatCLIConfiguration(
             codexModelName: normalizedCodexModelName,
             claudeModelName: normalizedClaudeModelName,
-            timeoutSeconds: max(Int(chatCLITimeoutInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 90, 10),
+            timeoutSeconds: normalizedChatCLITimeoutSeconds,
             storeDebugIO: chatCLIStoreDebugIO
         )
     }
