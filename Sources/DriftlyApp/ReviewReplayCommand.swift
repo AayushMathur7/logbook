@@ -107,6 +107,9 @@ enum ReviewReplayCommand {
         print("ID: \(session.id)")
         print("Window: \(ActivityFormatting.sessionTime.string(from: session.startedAt, to: session.endedAt))")
         print("Stored status: \(session.reviewStatus.rawValue)")
+        if let reviewErrorMessage = session.reviewErrorMessage, !reviewErrorMessage.isEmpty {
+            print("Stored error: \(reviewErrorMessage)")
+        }
         print("Captured events: \(eventCount)")
         print("")
     }

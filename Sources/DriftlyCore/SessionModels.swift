@@ -719,6 +719,7 @@ public struct StoredSession: Identifiable, Hashable, Codable {
     public let headline: String?
     public let summary: String?
     public let reviewStatus: ReviewStatus
+    public let reviewErrorMessage: String?
     public let primaryLabels: [String]
 
     public init(
@@ -730,6 +731,7 @@ public struct StoredSession: Identifiable, Hashable, Codable {
         headline: String? = nil,
         summary: String? = nil,
         reviewStatus: ReviewStatus = .none,
+        reviewErrorMessage: String? = nil,
         primaryLabels: [String] = []
     ) {
         self.id = id
@@ -740,6 +742,8 @@ public struct StoredSession: Identifiable, Hashable, Codable {
         self.headline = headline
         self.summary = summary
         self.reviewStatus = reviewStatus
+        let trimmedReviewErrorMessage = reviewErrorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.reviewErrorMessage = (trimmedReviewErrorMessage?.isEmpty == false) ? trimmedReviewErrorMessage : nil
         self.primaryLabels = primaryLabels
     }
 }

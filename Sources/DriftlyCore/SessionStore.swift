@@ -389,8 +389,8 @@ public final class SessionStore {
             db,
             sql: """
             INSERT INTO sessions (
-                id, goal, started_at, ended_at, verdict, headline, summary, review_status, primary_labels_json, raw_event_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, goal, started_at, ended_at, verdict, headline, summary, review_status, review_error_message, primary_labels_json, raw_event_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 goal = excluded.goal,
                 started_at = excluded.started_at,
@@ -399,6 +399,7 @@ public final class SessionStore {
                 headline = excluded.headline,
                 summary = excluded.summary,
                 review_status = excluded.review_status,
+                review_error_message = excluded.review_error_message,
                 primary_labels_json = excluded.primary_labels_json,
                 raw_event_count = excluded.raw_event_count
             """,
@@ -411,8 +412,9 @@ public final class SessionStore {
                 bindNullableText(session.headline, to: statement, index: 6)
                 bindNullableText(session.summary, to: statement, index: 7)
                 sqlite3_bind_text(statement, 8, session.reviewStatus.rawValue, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_text(statement, 9, labelsJSON, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_int(statement, 10, Int32(rawEventCount))
+                bindNullableText(session.reviewErrorMessage, to: statement, index: 9)
+                sqlite3_bind_text(statement, 10, labelsJSON, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int(statement, 11, Int32(rawEventCount))
             }
         )
 
@@ -490,7 +492,7 @@ public final class SessionStore {
         guard let db else { return [] }
         var results: [StoredSession] = []
         guard let statement = prepare(db, sql: """
-            SELECT id, goal, started_at, ended_at, verdict, headline, summary, review_status, primary_labels_json
+            SELECT id, goal, started_at, ended_at, verdict, headline, summary, review_status, review_error_message, primary_labels_json
             FROM sessions
             ORDER BY started_at DESC
             LIMIT ?
@@ -507,7 +509,7 @@ public final class SessionStore {
                 let goal = string(from: statement, index: 1),
                 let reviewStatusRaw = string(from: statement, index: 7),
                 let reviewStatus = ReviewStatus(rawValue: reviewStatusRaw),
-                let labelsJSON = string(from: statement, index: 8)
+                let labelsJSON = string(from: statement, index: 9)
             else {
                 reportStoreIssue("Skipping malformed session history row.")
                 continue
@@ -517,6 +519,7 @@ public final class SessionStore {
             let verdict = string(from: statement, index: 4).flatMap(SessionVerdict.init(rawValue:))
             let headline = string(from: statement, index: 5)
             let summary = string(from: statement, index: 6)
+            let reviewErrorMessage = string(from: statement, index: 8)
             let labels: [String]
             do {
                 labels = try jsonDecoder.decode([String].self, from: Data(labelsJSON.utf8))
@@ -534,6 +537,7 @@ public final class SessionStore {
                     headline: headline,
                     summary: summary,
                     reviewStatus: reviewStatus,
+                    reviewErrorMessage: reviewErrorMessage,
                     primaryLabels: labels
                 )
             )
@@ -546,7 +550,7 @@ public final class SessionStore {
         guard let db else { return [] }
         var results: [StoredSession] = []
         guard let statement = prepare(db, sql: """
-            SELECT id, goal, started_at, ended_at, verdict, headline, summary, review_status, primary_labels_json
+            SELECT id, goal, started_at, ended_at, verdict, headline, summary, review_status, review_error_message, primary_labels_json
             FROM sessions
             WHERE ended_at > ? AND started_at < ?
             ORDER BY started_at DESC
@@ -566,7 +570,7 @@ public final class SessionStore {
                 let goal = string(from: statement, index: 1),
                 let reviewStatusRaw = string(from: statement, index: 7),
                 let reviewStatus = ReviewStatus(rawValue: reviewStatusRaw),
-                let labelsJSON = string(from: statement, index: 8)
+                let labelsJSON = string(from: statement, index: 9)
             else {
                 reportStoreIssue("Skipping malformed ranged session row.")
                 continue
@@ -576,6 +580,7 @@ public final class SessionStore {
             let verdict = string(from: statement, index: 4).flatMap(SessionVerdict.init(rawValue:))
             let headline = string(from: statement, index: 5)
             let summary = string(from: statement, index: 6)
+            let reviewErrorMessage = string(from: statement, index: 8)
             let labels: [String]
             do {
                 labels = try jsonDecoder.decode([String].self, from: Data(labelsJSON.utf8))
@@ -593,6 +598,7 @@ public final class SessionStore {
                     headline: headline,
                     summary: summary,
                     reviewStatus: reviewStatus,
+                    reviewErrorMessage: reviewErrorMessage,
                     primaryLabels: labels
                 )
             )
@@ -1105,6 +1111,7 @@ public final class SessionStore {
                 headline TEXT,
                 summary TEXT,
                 review_status TEXT NOT NULL,
+                review_error_message TEXT,
                 primary_labels_json TEXT NOT NULL DEFAULT '[]',
                 raw_event_count INTEGER NOT NULL DEFAULT 0
             )
@@ -1243,6 +1250,7 @@ public final class SessionStore {
         ensureColumn(on: db, table: "session_review_feedback", name: "review_headline_snapshot", definition: "TEXT NOT NULL DEFAULT ''")
         ensureColumn(on: db, table: "session_review_feedback", name: "review_summary_snapshot", definition: "TEXT NOT NULL DEFAULT ''")
         ensureColumn(on: db, table: "session_review_feedback", name: "review_takeaway_snapshot", definition: "TEXT")
+        ensureColumn(on: db, table: "sessions", name: "review_error_message", definition: "TEXT")
     }
 }
 

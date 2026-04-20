@@ -67,6 +67,11 @@ struct ChatCLIStatus: Hashable {
     let message: String
 }
 
+struct ChatCLIProbeResult: Hashable {
+    let succeeded: Bool
+    let message: String
+}
+
 package struct ChatCLIRunResult {
     package let prompt: String
     package let output: String
@@ -274,6 +279,52 @@ private enum LoginShellRunner {
 
         return LoginShellResult(stdout: stdout, stderr: stderr, exitCode: process.terminationStatus)
     }
+
+    static func runExecutable(
+        _ executablePath: String,
+        arguments: [String],
+        timeout: TimeInterval? = 30
+    ) -> LoginShellResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+        process.standardInput = FileHandle.nullDevice
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+        } catch {
+            return LoginShellResult(stdout: "", stderr: error.localizedDescription, exitCode: -1)
+        }
+
+        if let timeout {
+            let semaphore = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                process.waitUntilExit()
+                semaphore.signal()
+            }
+
+            if semaphore.wait(timeout: .now() + timeout) == .timedOut {
+                process.terminate()
+                return LoginShellResult(
+                    stdout: "",
+                    stderr: "Command timed out after \(Int(timeout)) seconds",
+                    exitCode: -2
+                )
+            }
+        } else {
+            process.waitUntilExit()
+        }
+
+        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+        return LoginShellResult(stdout: stdout, stderr: stderr, exitCode: process.terminationStatus)
+    }
 }
 
 enum ChatCLIReviewRunner {
@@ -336,8 +387,7 @@ enum ChatCLIReviewRunner {
             )
         }
 
-        let executable = LoginShellRunner.shellEscape(executablePath)
-        let versionResult = LoginShellRunner.run("\(executable) --version", timeout: 10)
+        let versionResult = LoginShellRunner.runExecutable(executablePath, arguments: ["--version"], timeout: 10)
         guard versionResult.exitCode == 0 else {
             return ChatCLIStatus(
                 installed: false,
@@ -354,7 +404,7 @@ enum ChatCLIReviewRunner {
 
         switch tool {
         case .codex:
-            let statusResult = LoginShellRunner.run("\(executable) login status", timeout: 10)
+            let statusResult = LoginShellRunner.runExecutable(executablePath, arguments: ["login", "status"], timeout: 10)
             let combinedOutput = "\(statusResult.stdout)\n\(statusResult.stderr)".lowercased()
             let authenticated = statusResult.exitCode == 0 && combinedOutput.contains("logged in")
             return ChatCLIStatus(
@@ -366,7 +416,7 @@ enum ChatCLIReviewRunner {
                     : "Codex CLI is installed, but you still need to run `codex login`."
             )
         case .claude:
-            let statusResult = LoginShellRunner.run("\(executable) auth status", timeout: 10)
+            let statusResult = LoginShellRunner.runExecutable(executablePath, arguments: ["auth", "status"], timeout: 10)
             let authenticated = decodeClaudeAuthStatus(from: statusResult.stdout)
                 ?? (statusResult.exitCode == 0 && statusResult.stdout.lowercased().contains("\"loggedin\": true"))
 
@@ -377,6 +427,60 @@ enum ChatCLIReviewRunner {
                 message: authenticated
                     ? "Claude Code is installed and signed in."
                     : "Claude Code is installed, but you still need to run `claude auth login`."
+            )
+        }
+    }
+
+    static func probe(
+        tool: ChatCLITool,
+        model: String?,
+        timeoutSeconds: Int = 20
+    ) -> ChatCLIProbeResult {
+        let status = detect(tool: tool)
+        guard status.installed else {
+            return ChatCLIProbeResult(succeeded: false, message: status.message)
+        }
+        guard status.authenticated else {
+            return ChatCLIProbeResult(succeeded: false, message: status.message)
+        }
+
+        let prompt = "What is 2+2? Reply with only 4."
+        do {
+            let run = try runPlainText(
+                tool: tool,
+                prompt: prompt,
+                model: model,
+                timeoutSeconds: timeoutSeconds
+            )
+
+            guard responseMatchesProbeExpectation(run.output) else {
+                return ChatCLIProbeResult(
+                    succeeded: false,
+                    message: "\(tool.displayName) replied, but the result was not usable for a simple probe. Driftly expected `4` and got \(quotedPreview(of: run.output))."
+                )
+            }
+
+            let trimmedModel = model?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let modelMessage: String
+            if let trimmedModel, !trimmedModel.isEmpty {
+                modelMessage = " using \(trimmedModel)"
+            } else {
+                modelMessage = ""
+            }
+
+            return ChatCLIProbeResult(
+                succeeded: true,
+                message: "\(tool.displayName) passed a live provider test\(modelMessage)."
+            )
+        } catch let error as ChatCLIError {
+            return ChatCLIProbeResult(
+                succeeded: false,
+                message: error.localizedDescription
+            )
+        } catch {
+            return ChatCLIProbeResult(
+                succeeded: false,
+                message: "\(tool.displayName) failed: \(sanitizedUserVisibleMessage(error.localizedDescription))"
             )
         }
     }
@@ -654,6 +758,32 @@ enum ChatCLIReviewRunner {
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         return strippedLines.nilIfBlank ?? "Unknown error"
+    }
+
+    private static func responseMatchesProbeExpectation(_ output: String) -> Bool {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        let firstLine = trimmed
+            .components(separatedBy: .newlines)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? trimmed
+        let normalized = firstLine
+            .trimmingCharacters(in: CharacterSet(charactersIn: "`*._- \t\r\n"))
+            .trimmingCharacters(in: .punctuationCharacters)
+
+        return normalized == "4"
+    }
+
+    private static func quotedPreview(of output: String) -> String {
+        let normalized = output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+        let preview = normalized.isEmpty ? "(empty response)" : String(normalized.prefix(80))
+        if normalized.count > 80 {
+            return "`\(preview)...`"
+        }
+        return "`\(preview)`"
     }
 
     private static func writeFileIfNeeded(_ content: String, to path: URL) throws {

@@ -72,6 +72,7 @@ struct SettingsSheet: View {
                                     ForEach(AIReviewProvider.visibleAppCases, id: \.rawValue) { provider in
                                         Button(provider == .codex ? "Codex (local ChatGPT login)" : provider.displayName) {
                                             model.reviewProviderSelection = provider
+                                            model.clearReviewProviderTestResult()
                                             Task { await model.refreshReviewProviderStatus() }
                                         }
                                     }
@@ -125,8 +126,14 @@ struct SettingsSheet: View {
                                     }
 
                                     settingsChromeButton("Refresh") {
+                                        model.clearReviewProviderTestResult()
                                         Task { await model.refreshReviewProviderStatus() }
                                     }
+
+                                    settingsChromeButton(model.reviewProviderTestInFlight ? "Testing..." : "Test provider") {
+                                        Task { await model.testSelectedReviewProvider() }
+                                    }
+                                    .disabled(model.reviewProviderTestInFlight)
                                 }
 
                                 Text("Seconds. Set 0 to disable the review timeout.")
@@ -165,8 +172,14 @@ struct SettingsSheet: View {
                                     }
 
                                     settingsChromeButton("Refresh") {
+                                        model.clearReviewProviderTestResult()
                                         Task { await model.refreshReviewProviderStatus() }
                                     }
+
+                                    settingsChromeButton(model.reviewProviderTestInFlight ? "Testing..." : "Test provider") {
+                                        Task { await model.testSelectedReviewProvider() }
+                                    }
+                                    .disabled(model.reviewProviderTestInFlight)
                                 }
 
                                 Text("Seconds. Set 0 to disable the review timeout.")
@@ -182,6 +195,23 @@ struct SettingsSheet: View {
                                     isError: model.reviewProviderStatusIsError
                                 )
                             }
+
+                            Text("Test provider runs a short live prompt against the selected CLI and model. It uses a short fixed timeout even if review timeout is set to 0.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(DriftlyStyle.subtleText)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            if model.reviewProviderTestInFlight {
+                                settingsStatusMessage(
+                                    text: "Running a short live provider test.",
+                                    isError: false
+                                )
+                            } else if !model.reviewProviderTestMessage.isEmpty {
+                                settingsStatusMessage(
+                                    text: model.reviewProviderTestMessage,
+                                    isError: model.reviewProviderTestIsError
+                                )
+                            }
                         }
 
                         settingsSection("Capture") {
@@ -195,7 +225,7 @@ struct SettingsSheet: View {
 
                                 captureToggleRow(
                                     title: "Enable nudges",
-                                    detail: "Sends a reminder every 2 minutes during an active session. Snooze pauses it for a few minutes.",
+                                    detail: "Sends a simple reminder every 2 minutes during an active session.",
                                     isOn: Binding(
                                         get: { model.focusGuardEnabled },
                                         set: { model.setNudgesEnabled($0) }

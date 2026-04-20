@@ -400,7 +400,7 @@ extension ContentView {
                     }
                 }
             }
-            if let statusMessage = historyStatusMessage(for: detail.session.reviewStatus) {
+            if let statusMessage = historyStatusMessage(for: detail.session) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(detail.session.reviewStatus.historyTitle)
                         .font(.system(size: 24, weight: .semibold, design: .serif))
@@ -440,8 +440,21 @@ extension ContentView {
         .padding(.horizontal, 12)
     }
 
-    func historyStatusMessage(for status: ReviewStatus) -> String? {
-        switch status {
+    func historyStatusMessage(for session: StoredSession) -> String? {
+        if let persistedError = session.reviewErrorMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !persistedError.isEmpty,
+           session.reviewStatus == .failed || session.reviewStatus == .unavailable {
+            return persistedError
+        }
+
+        if session.reviewStatus == .failed || session.reviewStatus == .unavailable {
+            let currentProviderMessage = model.reviewProviderStatusMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !currentProviderMessage.isEmpty, currentProviderMessage != model.selectedChatCLITool.signInHint {
+                return "This older failed session did not save its exact provider error. Current provider status: \(currentProviderMessage)"
+            }
+        }
+
+        switch session.reviewStatus {
         case .pending:
             return "This session finished, but the review has not been saved yet."
         case .unavailable:

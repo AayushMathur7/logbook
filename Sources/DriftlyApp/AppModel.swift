@@ -94,6 +94,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var reviewProviderStatusMessage = ""
     @Published private(set) var reviewProviderStatusIsError = false
     @Published private(set) var reviewProviderStatusDidLoad = false
+    @Published private(set) var reviewProviderTestMessage = ""
+    @Published private(set) var reviewProviderTestIsError = false
+    @Published private(set) var reviewProviderTestInFlight = false
     @Published private(set) var codexCLIStatus = ChatCLIStatus(installed: false, authenticated: false, version: nil, message: "")
     @Published private(set) var claudeCLIStatus = ChatCLIStatus(installed: false, authenticated: false, version: nil, message: "")
     @Published private(set) var activeSessionEventCount = 0
@@ -111,7 +114,6 @@ final class AppModel: ObservableObject {
     @Published var showPermissionOnboarding = true
     @Published private(set) var focusGuardSettings = FocusGuardSettings()
     @Published private(set) var focusGuardAssessment = FocusGuardAssessment.empty
-    @Published private(set) var activeFocusGuardPrompt: FocusGuardPrompt?
     @Published private(set) var settingsSheetRequestID = 0
 
     private let monitor = ActivityMonitor()
@@ -163,11 +165,6 @@ final class AppModel: ObservableObject {
         )
         self.summaryNotifyWhenReady = captureSettings.summaryAutomation.notifyWhenReady
         self.rawEventRetentionDaysInput = String(captureSettings.rawEventRetentionDays)
-        self.focusGuardNotifications.onAction = { [weak self] action, sessionID in
-            Task { @MainActor [weak self] in
-                self?.handleFocusGuardNotificationAction(action, sessionID: sessionID)
-            }
-        }
 
         monitor.onEvent = { [weak self] event in
             self?.append(event)
@@ -520,14 +517,47 @@ final class AppModel: ObservableObject {
         await refreshReviewProviderStatus()
     }
 
+    func clearReviewProviderTestResult() {
+        reviewProviderTestMessage = ""
+        reviewProviderTestIsError = false
+    }
+
+    func testSelectedReviewProvider() async {
+        let provider = reviewProviderSelection
+        let tool = tool(for: provider)
+        let modelName = configuredModelName(for: provider)
+
+        reviewProviderTestInFlight = true
+        reviewProviderTestMessage = ""
+        reviewProviderTestIsError = false
+        await refreshReviewProviderStatus()
+
+        let result = await Task.detached(priority: .userInitiated) {
+            ChatCLIReviewRunner.probe(
+                tool: tool,
+                model: modelName,
+                timeoutSeconds: 20
+            )
+        }.value
+
+        guard reviewProviderSelection == provider else {
+            reviewProviderTestInFlight = false
+            return
+        }
+
+        reviewProviderTestMessage = result.message
+        reviewProviderTestIsError = !result.succeeded
+        reviewProviderTestInFlight = false
+    }
+
     func refreshReviewProviderStatus() async {
         reviewProviderStatusDidLoad = false
-        let detectedCodex = await Task.detached(priority: .userInitiated) {
-            ChatCLIReviewRunner.detect(tool: .codex)
-        }.value
-        let detectedClaude = await Task.detached(priority: .userInitiated) {
-            ChatCLIReviewRunner.detect(tool: .claude)
-        }.value
+        defer { reviewProviderStatusDidLoad = true }
+
+        async let detectedCodexTask = detectReviewProviderStatus(tool: .codex)
+        async let detectedClaudeTask = detectReviewProviderStatus(tool: .claude)
+        let detectedCodex = await detectedCodexTask
+        let detectedClaude = await detectedClaudeTask
         codexCLIStatus = detectedCodex
         claudeCLIStatus = detectedClaude
 
@@ -560,7 +590,32 @@ final class AppModel: ObservableObject {
                 reviewProviderStatusIsError = true
             }
         }
-        reviewProviderStatusDidLoad = true
+    }
+
+    private func detectReviewProviderStatus(tool: ChatCLITool) async -> ChatCLIStatus {
+        await withTaskGroup(of: ChatCLIStatus.self) { group in
+            group.addTask(priority: .userInitiated) {
+                ChatCLIReviewRunner.detect(tool: tool)
+            }
+            group.addTask(priority: .userInitiated) {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                return ChatCLIStatus(
+                    installed: false,
+                    authenticated: false,
+                    version: nil,
+                    message: "\(tool.displayName) setup check timed out in Driftly. Open Settings and use Test provider for a direct check."
+                )
+            }
+
+            let firstResult = await group.next() ?? ChatCLIStatus(
+                installed: false,
+                authenticated: false,
+                version: nil,
+                message: "\(tool.displayName) setup check failed."
+            )
+            group.cancelAll()
+            return firstResult
+        }
     }
 
     private func beginReviewProviderStatusPolling() {
@@ -757,9 +812,6 @@ final class AppModel: ObservableObject {
         focusGuardPreset = resolvedFocusPreset
         focusGuardEnabled = resolvedFocusPreset != .off
         focusGuardSettings = resolvedFocusPreset.settings
-        if resolvedFocusPreset == .off {
-            activeFocusGuardPrompt = nil
-        }
         Task { [weak self] in
             await self?.refreshReviewProviderStatus()
             self?.refreshPeriodicSummaries()
@@ -774,6 +826,24 @@ final class AppModel: ObservableObject {
 
     private var normalizedChatCLITimeoutSeconds: Int {
         max(Int(chatCLITimeoutInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 90, 0)
+    }
+
+    private func tool(for provider: AIReviewProvider) -> ChatCLITool {
+        switch provider {
+        case .codex:
+            return .codex
+        case .claude:
+            return .claude
+        }
+    }
+
+    private func configuredModelName(for provider: AIReviewProvider) -> String {
+        switch provider {
+        case .codex:
+            return normalizedCodexModelName
+        case .claude:
+            return normalizedClaudeModelName
+        }
     }
 
     private func currentChatCLIConfiguration() -> ChatCLIConfiguration {
@@ -999,7 +1069,6 @@ final class AppModel: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.refreshPermissionStatuses()
                 self?.reconcilePermissionRefreshTimer()
-                await self?.refreshReviewProviderStatus()
                 self?.refreshPeriodicSummaries()
                 await self?.runPendingPeriodicSummariesIfNeeded()
             }
@@ -1113,7 +1182,6 @@ final class AppModel: ObservableObject {
         sessionTimer = nil
         self.activeSession = nil
         activeSessionEventCount = 0
-        activeFocusGuardPrompt = nil
         nextFocusGuardEvaluationAt = nil
         surfaceState = .generatingReview
 
@@ -1136,6 +1204,7 @@ final class AppModel: ObservableObject {
             startedAt: context.startedAt,
             endedAt: context.endedAt,
             reviewStatus: .pending,
+            reviewErrorMessage: nil,
             primaryLabels: TimelineDeriver.primaryLabels(from: segments)
         )
         do {
@@ -1214,6 +1283,10 @@ final class AppModel: ObservableObject {
                     rawEventCount: context.events.count
                 )
             } catch {
+                ReviewDebugLogger.logReviewFailure(
+                    sessionTitle: context.title,
+                    error: error.localizedDescription
+                )
                 applyReviewFailure(
                     sessionID: context.sessionID,
                     title: context.title,
@@ -1257,6 +1330,7 @@ final class AppModel: ObservableObject {
             startedAt: startedAt,
             endedAt: endedAt,
             reviewStatus: reviewStatus,
+            reviewErrorMessage: message,
             primaryLabels: TimelineDeriver.primaryLabels(from: segments)
         )
 
@@ -1296,6 +1370,7 @@ final class AppModel: ObservableObject {
             headline: review.headline,
             summary: review.summary,
             reviewStatus: reviewStatus,
+            reviewErrorMessage: nil,
             primaryLabels: TimelineDeriver.primaryLabels(from: review.segments)
         )
 
@@ -1514,39 +1589,6 @@ final class AppModel: ObservableObject {
         values.joined(separator: "\n")
     }
 
-    func dismissFocusGuardPrompt() {
-        activeFocusGuardPrompt = nil
-    }
-
-    func snoozeFocusGuardPrompt() {
-        guard let activeSession, let prompt = activeFocusGuardPrompt else { return }
-        focusGuardRuntimeState.snoozedUntil = Date().addingTimeInterval(TimeInterval(focusGuardSettings.cooldownMinutes * 60))
-        nextFocusGuardEvaluationAt = focusGuardRuntimeState.snoozedUntil
-        append(focusGuardEvent(kind: .focusGuardSnoozed, sessionID: activeSession.id, prompt: prompt))
-        activeFocusGuardPrompt = nil
-    }
-
-    func ignoreFocusGuardPrompt() {
-        guard let activeSession, let prompt = activeFocusGuardPrompt else { return }
-        append(focusGuardEvent(kind: .focusGuardIgnored, sessionID: activeSession.id, prompt: prompt))
-        activeFocusGuardPrompt = nil
-    }
-
-    func handleFocusGuardNotificationAction(_ action: FocusGuardNotificationCoordinator.Action, sessionID: String?) {
-        guard let activeSession else { return }
-        if let sessionID, sessionID != activeSession.id {
-            return
-        }
-
-        switch action {
-        case .backOnTrack:
-            dismissFocusGuardPrompt()
-        case .snooze:
-            snoozeFocusGuardPrompt()
-        case .ignore:
-            ignoreFocusGuardPrompt()
-        }
-    }
 }
 
 private extension AppModel {
@@ -1739,16 +1781,6 @@ private extension AppModel {
         guard now >= (nextFocusGuardEvaluationAt ?? session.startedAt.addingTimeInterval(focusGuardReminderInterval)) else {
             return
         }
-        guard activeFocusGuardPrompt == nil else {
-            nextFocusGuardEvaluationAt = now.addingTimeInterval(focusGuardReminderInterval)
-            return
-        }
-
-        if let snoozedUntil = focusGuardRuntimeState.snoozedUntil, snoozedUntil > now {
-            nextFocusGuardEvaluationAt = snoozedUntil
-            return
-        }
-
         guard session.endsAt.timeIntervalSince(now) > 15 else { return }
 
         nextFocusGuardEvaluationAt = now.addingTimeInterval(focusGuardReminderInterval)
@@ -1761,7 +1793,6 @@ private extension AppModel {
             delivery: .notification
         )
 
-        activeFocusGuardPrompt = prompt
         focusGuardRuntimeState.lastPromptAt = now
         focusGuardRuntimeState.promptCount += 1
         append(focusGuardEvent(kind: .focusGuardPrompted, sessionID: session.id, prompt: prompt))
@@ -1782,18 +1813,18 @@ private extension AppModel {
         switch provider {
         case .codex:
             if !codexCLIStatus.installed {
-                return "Codex is not installed yet."
+                return codexCLIStatus.message.isEmpty ? "Codex is not installed yet." : codexCLIStatus.message
             }
             if !codexCLIStatus.authenticated {
-                return "Codex is installed, but you still need to run `codex login`."
+                return codexCLIStatus.message.isEmpty ? "Codex is installed, but you still need to run `codex login`." : codexCLIStatus.message
             }
             return nil
         case .claude:
             if !claudeCLIStatus.installed {
-                return "Claude Code is not installed yet."
+                return claudeCLIStatus.message.isEmpty ? "Claude Code is not installed yet." : claudeCLIStatus.message
             }
             if !claudeCLIStatus.authenticated {
-                return "Claude Code is installed, but you still need to run `claude auth login`."
+                return claudeCLIStatus.message.isEmpty ? "Claude Code is installed, but you still need to run `claude auth login`." : claudeCLIStatus.message
             }
             return nil
         }
@@ -1830,7 +1861,6 @@ private extension AppModel {
         focusGuardRuntimeState = FocusGuardRuntimeState()
         nextFocusGuardEvaluationAt = nil
         focusGuardAssessment = FocusGuardAssessment.empty
-        activeFocusGuardPrompt = nil
     }
 
     func deriveWatchRoots(from events: [ActivityEvent]) -> [String] {

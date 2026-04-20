@@ -3,18 +3,9 @@ import DriftlyCore
 import UserNotifications
 
 final class FocusGuardNotificationCoordinator: NSObject, UNUserNotificationCenterDelegate {
-    enum Action: String {
-        case backOnTrack = "FOCUS_GUARD_BACK_ON_TRACK"
-        case snooze = "FOCUS_GUARD_SNOOZE"
-        case ignore = "FOCUS_GUARD_IGNORE"
-    }
-
     private enum Constants {
-        static let categoryID = "DRIFTLY_FOCUS_GUARD"
         static let threadID = "driftly-focus-guard"
     }
-
-    var onAction: ((Action, String?) -> Void)?
 
     private let center: UNUserNotificationCenter? = {
         guard Bundle.main.bundleURL.pathExtension == "app",
@@ -28,7 +19,6 @@ final class FocusGuardNotificationCoordinator: NSObject, UNUserNotificationCente
     override init() {
         super.init()
         center?.delegate = self
-        registerCategories()
     }
 
     static var notificationsSupported: Bool {
@@ -47,9 +37,7 @@ final class FocusGuardNotificationCoordinator: NSObject, UNUserNotificationCente
             return false
         case .notDetermined:
             do {
-                let granted = try await center.requestAuthorization(options: [.alert, .sound])
-                registerCategories()
-                return granted
+                return try await center.requestAuthorization(options: [.alert, .sound])
             } catch {
                 return false
             }
@@ -87,7 +75,6 @@ final class FocusGuardNotificationCoordinator: NSObject, UNUserNotificationCente
         content.subtitle = ""
         content.body = prompt.message
         content.sound = .default
-        content.categoryIdentifier = Constants.categoryID
         content.threadIdentifier = Constants.threadID
         content.userInfo = [
             "session_id": prompt.sessionID,
@@ -107,31 +94,6 @@ final class FocusGuardNotificationCoordinator: NSObject, UNUserNotificationCente
         }
     }
 
-    private func registerCategories() {
-        guard let center else { return }
-
-        let backOnTrack = UNNotificationAction(
-            identifier: Action.backOnTrack.rawValue,
-            title: "Back on track"
-        )
-        let snooze = UNNotificationAction(
-            identifier: Action.snooze.rawValue,
-            title: "Snooze"
-        )
-        let ignore = UNNotificationAction(
-            identifier: Action.ignore.rawValue,
-            title: "Ignore"
-        )
-
-        let category = UNNotificationCategory(
-            identifier: Constants.categoryID,
-            actions: [backOnTrack, snooze, ignore],
-            intentIdentifiers: []
-        )
-
-        center.setNotificationCategories([category])
-    }
-
     private func scheduleFallback(prompt: FocusGuardPrompt) {
         let body = appleScriptString(prompt.message)
         let title = appleScriptString(prompt.reason)
@@ -148,33 +110,10 @@ final class FocusGuardNotificationCoordinator: NSObject, UNUserNotificationCente
         return "\"\(escaped)\""
     }
 
-    private func action(from identifier: String) -> Action? {
-        Action(rawValue: identifier)
-    }
-
-    private func sessionID(from response: UNNotificationResponse) -> String? {
-        response.notification.request.content.userInfo["session_id"] as? String
-    }
-
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
         [.banner, .list, .sound]
-    }
-
-    func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
-        guard response.notification.request.content.categoryIdentifier == Constants.categoryID,
-              let action = action(from: response.actionIdentifier) else {
-            return
-        }
-
-        let sessionID = sessionID(from: response)
-        await MainActor.run {
-            onAction?(action, sessionID)
-        }
     }
 }

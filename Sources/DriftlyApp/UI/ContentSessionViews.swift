@@ -82,30 +82,41 @@ extension ContentView {
     }
 
     func runningView(session: FocusSession) -> some View {
-        VStack(alignment: .center, spacing: 22) {
-            Text(session.title)
-                .font(.system(size: 25, weight: .semibold, design: .serif))
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 520)
+        VStack(alignment: .center, spacing: 0) {
+            Spacer(minLength: 0)
 
-            VStack(alignment: .center, spacing: 6) {
+            VStack(alignment: .center, spacing: 22) {
+                Text(session.title)
+                    .font(.system(size: 18, weight: .semibold, design: .serif))
+                    .foregroundStyle(DriftlyStyle.subtleText)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(
+                        Capsule()
+                            .fill(DriftlyStyle.inputFill)
+                    )
+                    .overlay(
+                        Capsule()
+                            .stroke(DriftlyStyle.cardStroke, lineWidth: 1)
+                    )
+
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Text(remainingLabel(session: session, now: context.date))
                         .font(.system(size: 64, weight: .semibold, design: .rounded))
                         .contentTransition(.numericText())
+                        .monospacedDigit()
+                }
+
+                openAIActionButton("End session", systemImage: "stop.fill") {
+                    model.endSessionNow()
                 }
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: 540)
 
-            if let prompt = model.activeFocusGuardPrompt {
-                focusGuardPromptCard(prompt)
-            }
-
-            openAIActionButton("End session", systemImage: "stop.fill") {
-                model.endSessionNow()
-            }
+            Spacer(minLength: 0)
         }
-        .frame(maxWidth: 540)
+        .frame(maxWidth: .infinity, minHeight: 280)
         .padding(.horizontal, 12)
     }
 
@@ -172,34 +183,5 @@ extension ContentView {
         let minutes = remaining / 60
         let seconds = remaining % 60
         return String(format: "%02d:%02d", minutes, seconds)
-    }
-
-    func focusGuardPromptCard(_ prompt: FocusGuardPrompt) -> some View {
-        Card {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(prompt.reason)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(DriftlyStyle.text)
-
-                Text(prompt.message)
-                    .font(.system(size: 12))
-                    .foregroundStyle(DriftlyStyle.subtleText)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 8) {
-                    openAIActionButton("Back on track", systemImage: "checkmark") {
-                        model.dismissFocusGuardPrompt()
-                    }
-
-                    openAIActionButton("Snooze", systemImage: "zzz") {
-                        model.snoozeFocusGuardPrompt()
-                    }
-
-                    openAIActionButton("Ignore", systemImage: "xmark") {
-                        model.ignoreFocusGuardPrompt()
-                    }
-                }
-            }
-        }
     }
 }
