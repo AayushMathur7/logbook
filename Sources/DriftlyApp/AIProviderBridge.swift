@@ -502,6 +502,7 @@ package enum AIProviderBridge: LocalReviewProvider {
         - Use `entities` for the surfaces or tools that deserve pills in the UI.
         - Use `links` only for observed URLs worth showing below the review.
         - Use named sites, repos, files, or tools instead of generic phrases like browser activity or file activity.
+        - When listing distinct named surfaces in prose, separate them with commas instead of merging them into one phrase.
         - Keep browser profile noise like Default, WebStorage, or profile churn out of the prose and entities.
         - Keep `summary` to two short, scannable sentences. Prefer a simple setup sentence, then an evidence or consequence sentence.
         - Include compact evidence in the summary, not just interpretation.
@@ -550,6 +551,7 @@ package enum AIProviderBridge: LocalReviewProvider {
         - Keep `summary` to two short, scannable sentences. Prefer a simple setup sentence, then an evidence or consequence sentence.
         - Keep compact evidence in the summary, not just interpretation.
         - When the evidence exists, include one timing fact and one churn fact in the summary.
+        - When listing distinct named surfaces in prose, separate them with commas instead of merging them into one phrase.
         - Keep URLs in `links`, not in prose.
         - Make `insight` one immediate next move on an observed surface, ideally starting with a concrete action verb.
         - Return only the JSON object that matches the provided schema.
